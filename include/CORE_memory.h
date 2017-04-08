@@ -22,6 +22,11 @@
 #define CORE_RESTRICT                    __restrict
 #endif
 
+/* Define the maximum number of opaque "user data" bytes that can be stored with a memory arena or memory allocator. */
+#ifndef CORE_MEMORY_ALLOCATOR_MAX_USER
+#define CORE_MEMORY_ALLOCATOR_MAX_USER   64
+#endif
+
 /* @summary Retrieve the alignment of a particular type, in bytes.
  * @param _t A typename, such as int, specifying the type whose alignment is to be retrieved.
  */
@@ -64,6 +69,13 @@
 struct _CORE_HOST_MEMORY_POOL;
 struct _CORE_HOST_MEMORY_POOL_INIT;
 struct _CORE_HOST_MEMORY_ALLOCATION;
+struct _CORE_MEMORY_ARENA;
+struct _CORE_MEMORY_ALLOCATOR;
+struct _CORE_MEMORY_ARENA_INIT;
+struct _CORE_MEMORY_ALLOCATOR_INIT;
+struct _CORE_ARENA_MEMORY_ALLOCATOR_STATE;
+struct _CORE_BUDDY_MEMORY_ALLOCATOR_STATE;
+struct _CORE_BUDDY_BLOCK_INFO;
 
 /* Define the data representing a pool of host memory allocations. Each pool can be accessed from a single thread only. */
 typedef struct _CORE_HOST_MEMORY_POOL {
@@ -97,6 +109,108 @@ typedef struct _CORE_HOST_MEMORY_ALLOCATION {
     uint64_t                             BytesCommitted;     /* The number of bytes of process address space committed to the allocation. */
     uint32_t                             AllocationFlags;    /* One or more values from the _CORE_HOST_MEMORY_ALLOCATION_FLAGS enumeration. */
 } CORE_HOST_MEMORY_ALLOCATION;
+
+/* Define the data associated with an arena-style memory allocator. In a memory arena, all allocations are cleared at once. */
+typedef struct _CORE_ARENA_MEMORY_ALLOCATOR_STATE {
+    uint64_t                             NextOffset;         /* The byte offset, relative to the start of the associated memory range, of the next free byte. */
+    uint64_t                             MaximumOffset;      /* The maximum value of NextOffset. NextOffset is always in [0, MaximumOffset]. */
+} CORE_ARENA_MEMORY_ALLOCATOR_STATE;
+
+/* Define the data associated with a buddy memory allocator. The buddy allocator can manage a maximum of 4GB, which is divided into power-of-two sized chunks between a minimum and maximum size. */
+/* CORE_BUDDY_ALLOCATOR_MAX_LEVELS defines the maximum number of power-of-two steps between the minimum and maximum size. */
+/* See http://bitsquid.blogspot.com/2015/08/allocation-adventures-3-buddy-allocator.html */
+#ifndef CORE_BUDDY_ALLOCATOR_MAX_LEVELS
+#define CORE_BUDDY_ALLOCATOR_MAX_LEVELS  16
+#endif
+typedef struct _CORE_BUDDY_MEMORY_ALLOCATOR_STATE {
+    #define N CORE_BUDDY_ALLOCATOR_MAX_LEVELS
+    uint64_t                             AllocationSizeMin;  /* The size of the smallest memory block that can be returned by the buddy allocator, in bytes. */
+    uint64_t                             AllocationSizeMax;  /* The size of the largest memory block that can be returned by the buddy allocator, in bytes. */
+    uint64_t                             BytesReserved;      /* The number of bytes marked as reserved. These bytes can never be allocated to the application. */
+    uint8_t                             *MetadataBase;       /* The base address of the metadata storage allocation. */
+    uint32_t                            *FreeListData;       /* Storage for the free list arrays, allocated as a single contiguous block. There are 1 << LevelCount uint32_t values. */
+    uint32_t                            *MergeIndex;         /* An array of 1 << (LevelCount-1) bits with each bit storing the state of a buddy pair. */
+    uint32_t                            *SplitIndex;         /* An array of 1 << (LevelCount-1) bits with each bit set if the block at bit index i has been split. */
+    uint32_t                             Reserved;           /* Reserved for future use. Set to zero. */
+    uint32_t                             LevelCount;         /* The total number of levels used by the allocator, with level 0 representing the largest level. */
+    uint32_t                             LevelBits[N];       /* The zero-based index of the set bit for each level. LevelCount entries are valid. */
+    uint32_t                             FreeCount[N];       /* The number of entries in the free list for each level. LevelCount entries are valid. */
+    uint32_t                            *FreeLists[N];       /* Each of LevelCount entries points to an array of 1 << LevelIndex values specifying free block offsets for that level. */
+    #undef  N
+} CORE_BUDDY_MEMORY_ALLOCATOR_STATE;
+
+/* Define the data returned from a buddy allocator block query. */
+typedef struct _CORE_BUDDY_BLOCK_INFO {
+    uint32_t                             LevelIndex;         /* The zero-based index of the level at which the block was allocated, with level 0 being the largest level. */
+    uint32_t                             BitIndex;           /* The zero-based index of the bit that is set for blocks in this level. */
+    uint32_t                             BlockSize;          /* The size of the blocks in this level, in bytes. */
+    uint32_t                             BlockCount;         /* The maximum number of blocks in this level. */
+    uint32_t                             IndexOffset;        /* The offset used to transform an absolute index into a relative index. */
+    uint32_t                             LeftAbsoluteIndex;  /* The absolute block index of the leftmost block of the buddy pair, either BlockAbsoluteIndex or BuddyAbsoluteIndex. */
+    uint32_t                             BlockAbsoluteIndex; /* The absolute block index of the input block. */
+    uint32_t                             BuddyAbsoluteIndex; /* The absolute block index of the buddy of the input block. */
+} CORE_BUDDY_BLOCK_INFO;
+
+/* Define the data associated with a memory arena, which allows allocation of host or device memory and allows reset of the entire arena, or reset back to a given point in time. */
+typedef struct _CORE_MEMORY_ARENA {
+    #define N CORE_MEMORY_ALLOCATOR_MAX_USER
+    char const                          *AllocatorName;      /* A nul-terminated string specifying the name of the allocator. Used for debugging purposes only. */
+    uint32_t                             AllocatorType;      /* One of _CORE_MEMORY_ALLOCATOR_TYPE indicating whether this is a host or device memory allocator. */
+    uint64_t                             MemoryStart;        /* The address or offset of the start of the memory block from which sub-allocations are returned. */
+    uint64_t                             MemorySize;         /* The size of the memory block from which sub-allocations are returned, in bytes. */
+    CORE_ARENA_MEMORY_ALLOCATOR_STATE    AllocatorState;     /* The state associated with the allocator instance. */
+    uint8_t                              UserData[N];        /* Extra storage for data the user wants to associate with the allocator instance. */
+    #undef  N
+} CORE_MEMORY_ARENA;
+
+/* Define the data used to configure a memory arena allocator when it is initialized. */
+typedef struct _CORE_MEMORY_ARENA_INIT {
+    char const                          *AllocatorName;      /* A nul-terminated string specifying the name of the allocator. Used for debugging purposes only. */
+    uint32_t                             AllocatorType;      /* One of _CORE_MEMORY_ALLOCATOR_TYPE indicating whether this is a host or device memory allocator. */
+    uint64_t                             MemoryStart;        /* The address or offset of the start of the memory block from which sub-allocations are returned. */
+    uint64_t                             MemorySize;         /* The size of the memory block from which sub-allocations are returned, in bytes. */
+    void                                *UserData;           /* The user data to be copied into the allocator instance. */
+    uint64_t                             UserDataSize;       /* The number of bytes of user data to copy into the allocator instance. */
+} CORE_MEMORY_ARENA_INIT;
+
+/* An arena marker represents the allocator state at a specific point in time. */
+typedef uint64_t CORE_MEMORY_ARENA_MARKER;                   /* This value holds the NextOffset value of the arena allocator state. */
+
+/* Define the data associated with a general-purpose memory allocator that supports memory management for host or device memory. */
+typedef struct _CORE_MEMORY_ALLOCATOR {
+    #define N CORE_MEMORY_ALLOCATOR_MAX_USER
+    char const                          *AllocatorName;      /* A nul-terminated string specifying the name of the allocator. Used for debugging purposes only. */
+    uint32_t                             AllocatorType;      /* One of _CORE_MEMORY_ALLOCATOR_TYPE indicating whether this is a host or device memory allocator. */
+    uint64_t                             MemoryStart;        /* The address or offset of the start of the memory block from which sub-allocations are returned. */
+    uint64_t                             MemorySize;         /* The size of the memory block from which sub-allocations are returned, in bytes. */
+    CORE_BUDDY_MEMORY_ALLOCATOR_STATE    AllocatorState;     /* The state associated with the allocator instance. */
+    void                                *StateData;          /* The caller-allocated memory to be used for storing allocator state data. */
+    uint64_t                             StateDataSize;      /* The number of bytes of state data available for use by the allocator instance. */
+    uint8_t                              UserData[N];        /* Extra storage for data the user wants to associate with the allocator instance. */
+    #undef  N
+} CORE_MEMORY_ALLOCATOR;
+
+/* Define the data used to configure a general-purpose memory allocator when it is initialized. */
+typedef struct _CORE_MEMORY_ALLOCATOR_INIT {
+    char const                          *AllocatorName;      /* A nul-terminated string specifying the name of the allocator. Used for debugging purposes only. */
+    uint32_t                             AllocatorType;      /* One of _CORE_MEMORY_ALLOCATOR_TYPE indicating whether this is a host or device memory allocator. */
+    uint64_t                             AllocationSizeMin;  /* The size of the smallest memory block that can be returned from the allocator, in bytes. */
+    uint64_t                             AllocationSizeMax;  /* The size of the largest memory block that can be returned from the allocator, in bytes. */
+    uint64_t                             BytesReserved;      /* The number of bytes marked as reserved. These bytes can never be allocated to the application. */
+    uint64_t                             MemoryStart;        /* The address or offset of the start of the memory block from which sub-allocations are returned. */
+    uint64_t                             MemorySize;         /* The size of the memory block from which sub-allocations are returned, in bytes. */
+    void                                *StateData;          /* The caller-allocated memory to be used for storing allocator state data. This value must be non-NULL. */
+    uint64_t                             StateDataSize;      /* The number of bytes of state data available for use by the allocator instance. This value must be at least the size returned by CORE_QueryMemoryAllocatorStateSize. */
+    void                                *UserData;           /* The user data to be copied into the allocator instance. */
+    uint64_t                             UserDataSize;       /* The number of bytes of user data to copy into the allocator instance. */
+} CORE_MEMORY_ALLOCATOR_INIT;
+
+/* Define the allowed values for memory allocator type. An allocator can manage either host or device memory. */
+typedef enum _CORE_MEMORY_ALLOCATOR_TYPE {
+    CORE_MEMORY_ALLOCATOR_TYPE_INVALID          =  0,        /* This value is invalid and should not be used. */
+    CORE_MEMORY_ALLOCATOR_TYPE_HOST             =  1,        /* The allocator is a host memory allocator. */
+    CORE_MEMORY_ALLOCATOR_TYPE_DEVICE           =  2,        /* The allocator is a device memory allocator. */
+} CORE_MEMORY_ALLOCATOR_TYPE;
 
 /* Define various flags that can be bitwise OR'd to control the allocation attributes for a single host memory allocation. */
 typedef enum _CORE_HOST_MEMORY_ALLOCATION_FLAGS {
@@ -286,8 +400,40 @@ CORE_HostMemoryRelease
 
 #ifdef CORE_MEMORY_IMPLEMENTATION
 
-/* Internal functions are declared static ReturnType CORE__ (double-underscore) */
+/* Define the information used to look up the status of a block in the buddy allocator merge index.
+ * The merge index contains one bit per buddy-pair. 
+ * The bit is clear if both blocks are free, or bother are allocated.
+ * The bit is set if only one block is allocated.
+ */
+typedef struct _CORE__BUDDY_BLOCK_MERGE_INFO {
+    uint32_t WordIndex;  /// The zero-based index of the uint32_t value in the CORE_BUDDY_MEMORY_ALLOCATOR_STATE::MergeIndex field. */
+    uint32_t Mask;       /// The mask value used to test or manipulate the state of the bit. */
+} CORE__BUDDY_BLOCK_MERGE_INFO;
 
+/* Define the information used to look up the status of a block in the buddy allocator split index.
+ * The split index contains one bit per-block for each level not including the leaf level.
+ * The bit is set if the corresponding block has been split.
+ */
+typedef struct _CORE__BUDDY_BLOCK_SPLIT_INFO {
+    uint32_t WordIndex;  /* The zero-based index of the uint32_t value in the CORE_BUDDY_MEMORY_ALLOCATOR_STATE::SplitIndex field. */
+    uint32_t Mask;       /* The mask value used to test or manipulate the state of the bit. */
+} CORE__BUDDY_BLOCK_SPLIT_INFO;
+
+static void
+CORE__BuddyAllocatorPushFreeOffset
+(
+    CORE_BUDDY_MEMORY_ALLOCATOR_STATE *alloc, 
+    uint32_t                          offset,
+    uint32_t                           level
+)
+{
+    uint32_t count = alloc->FreeCount[level];
+    alloc->FreeLists[level][count] = offset;
+    alloc->FreeCount[level] = count+1;
+}
+
+/* PLATFORM-SPECIFIC PORTION OF THE PUBLIC API */
+#if defined(CORE_MEMORY_IMPLEMENTATION_WIN32)
 CORE_API(void)
 CORE_ZeroMemory
 (
@@ -711,6 +857,7 @@ CORE_HostMemoryRelease
     alloc->BytesReserved  = 0;
     alloc->BytesCommitted = 0;
 }
+#endif /* CORE_MEMORY_IMPLEMENTATION_WIN32 */
 
 #endif /* CORE_MEMORY_IMPLEMENTATION */
 
