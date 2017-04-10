@@ -12,31 +12,27 @@
 /* #define CORE_STATIC to make all function declarations and definitions static.     */
 /* This is useful if the library needs to be included multiple times in the project. */
 #ifdef  CORE_STATIC
-#define CORE_API(_rt)                                           static _rt
+#define CORE_API(_rt)                     static _rt
 #else
-#define CORE_API(_rt)                                           extern _rt
+#define CORE_API(_rt)                     extern _rt
 #endif
 
 /* Define the appropriate restrict keyword for your compiler. */
 #ifndef CORE_RESTRICT
-#define CORE_RESTRICT                                           __restrict
+#define CORE_RESTRICT                     __restrict
 #endif
 
 /* Define the maximum number of opaque "user data" bytes that can be stored with a memory arena or memory allocator. */
 #ifndef CORE_MEMORY_ALLOCATOR_MAX_USER
-#define CORE_MEMORY_ALLOCATOR_MAX_USER                          64
-#endif
-
-/* Define the value returned from memory allocation functions on failure. */
-#ifndef CORE_MEMORY_ALLOCATION_FAILED
-#define CORE_MEMORY_ALLOCATION_FAILED                           (~(uint64_t)0)
+#define CORE_MEMORY_ALLOCATOR_MAX_USER    64
 #endif
 
 /* @summary Retrieve the alignment of a particular type, in bytes.
  * @param _type A typename, such as int, specifying the type whose alignment is to be retrieved.
  */
 #ifndef CORE_AlignOf
-#define CORE_AlignOf(_type)                                     __alignof(_type)
+#define CORE_AlignOf(_type)                                                    \
+    __alignof(_type)
 #endif
 
 /* @summary Align a non-zero size up to the nearest even multiple of a given power-of-two.
@@ -44,7 +40,8 @@
  * @param _alignment is the desired power-of-two alignment.
  */
 #ifndef CORE_AlignUp
-#define CORE_AlignUp(_quantity, _alignment)                     (((_quantity) + ((_alignment)-1)) & ~((_alignment)-1))
+#define CORE_AlignUp(_quantity, _alignment)                                    \
+    (((_quantity) + ((_alignment)-1)) & ~((_alignment)-1))
 #endif
 
 /* @summary For a given address, return the address aligned for a particular type.
@@ -52,14 +49,16 @@
  * @param _type A typename, such as int, specifying the type whose alignment is to be retrieved.
  */
 #ifndef CORE_AlignFor
-#define CORE_AlignFor(_address, _type)                          ((void*)((((uint8_t*)(_address)) + ((__alignof(_type))-1)) & ~((__alignof(_type))-1)))
+#define CORE_AlignFor(_address, _type)                                         \
+    ((void*)((((uint8_t*)(_address)) + ((__alignof(_type))-1)) & ~((__alignof(_type))-1)))
 #endif
 
 /* @summary For a given type, calculate the maximum number of bytes that will need to be allocated for an instance of that type, accounting for the padding required for proper alignment.
  * @param _type A typename, such as int, specifying the type whose allocation size is being queried.
  */
 #ifndef CORE_AllocationSizeType
-#define CORE_AllocationSizeType(_type)                          ((sizeof(_type)) + (__alignof(_type)-1))
+#define CORE_AllocationSizeType(_type)                                         \
+    ((sizeof(_type)) + (__alignof(_type)-1))
 #endif
 
 /* @summary For a given type, calculate the maximum number of bytes that will need to be allocated for an array of instances of that type, accounting for the padding required for proper alignment.
@@ -67,26 +66,67 @@
  * @param _count The number of elements in the array.
  */
 #ifndef CORE_AllocationSizeArray
-#define CORE_AllocationSizeArray(_type, _count)                 ((sizeof(_type) * (_count)) + (__alignof(_type)-1))
+#define CORE_AllocationSizeArray(_type, _count)                                \
+    ((sizeof(_type) * (_count)) + (__alignof(_type)-1))
 #endif
 
-/* @summary Allocate memory with the correct size and alignment for an instance of a given type from a memory arena.
+/* @summary Allocate host memory with the correct size and alignment for an instance of a given type from a memory arena.
  * @param _arena The CORE_MEMORY_ARENA from which the allocation is being made.
  * @param _type A typename, such as int, specifying the type being allocated.
- * @return A 64-bit value specifying the address (for host-visible allocations) or offset (for device allocations) of the new instance, or CORE_MEMORY_ALLOCATION_FAILED.
+ * @param _blk A CORE_MEMORY_BLOCK to be populated with information about the allocation, or NULL.
+ * @return A pointer to the start of the allocated memory block, or NULL.
  */
-#ifndef CORE_MemoryArenaAllocateType
-#define CORE_MemoryArenaAllocateType(_arena, _type)             (CORE_MemoryArenaAllocate((_arena), sizeof(_type), __alignof(_type)))
+#ifndef CORE_MemoryArenaAllocateHostType
+#define CORE_MemoryArenaAllocateHostType(_arena, _type, _blk)                  \
+    ((_type*) CORE_MemoryArenaAllocateHost((_arena), sizeof(_type), __alignof(_type), (_blk)))
 #endif
 
 /* @summary Allocate memory with the correct size and alignment for an array of instance of a given type from a memory arena.
  * @param _arena The CORE_MEMORY_ARENA from which the allocation is being made.
  * @param _type A typename, such as int, specifying the type being allocated.
  * @param _count The number of elements in the array.
- * @return A 64-bit value specifying the address (for host-visible allocations) or offset (for device allocations) of the new array, or CORE_MEMORY_ALLOCATION_FAILED.
+ * @param _blk A CORE_MEMORY_BLOCK to be populated with information about the allocation, or NULL.
+ * @return A pointer to the start of the allocated memory block, or NULL.
  */
-#ifndef CORE_MemoryArenaAllocateArray
-#define CORE_MemoryArenaAllocateArray(_arena, _type, _count)    (CORE_MemoryArenaAllocate((_arena), sizeof(_type) * (_count), __alignof(_type)))
+#ifndef CORE_MemoryArenaAllocateHostArray
+#define CORE_MemoryArenaAllocateHostArray(_arena, _type, _count, _blk)         \
+    ((_type*) CORE_MemoryArenaAllocateHost((_arena), sizeof(_type) * (_count), __alignof(_type), (_blk)))
+#endif
+
+/* @summary Allocate host memory with the correct size and alignment for an instance of a given type from a general-purpose memory allocator.
+ * @param _alloc The CORE_MEMORY_ALLOCATOR from which the allocation is being made.
+ * @param _type A typename, such as int, specifying the type being allocated.
+ * @param _blk A CORE_MEMORY_BLOCK to be populated with information about the allocation. Must not be NULL.
+ * @return A pointer to the start of the allocated memory block, or NULL.
+ */
+#ifndef CORE_MemoryAllocateHostType
+#define CORE_MemoryAllocateHostType(_alloc, _type, _blk)                       \
+    ((_type*) CORE_MemoryAllocateHost((_alloc), sizeof(_type), __alignof(_type), (_blk)))
+#endif
+
+/* @summary Allocate memory with the correct size and alignment for an array of instance of a given type from a general-purpose memory allocator.
+ * @param _alloc The CORE_MEMORY_ALLOCATOR from which the allocation is being made.
+ * @param _type A typename, such as int, specifying the type being allocated.
+ * @param _count The number of elements in the array.
+ * @param _blk A CORE_MEMORY_BLOCK to be populated with information about the allocation. Must not be NULL.
+ * @return A pointer to the start of the allocated memory block, or NULL.
+ */
+#ifndef CORE_MemoryAllocateHostArray
+#define CORE_MemoryAllocateHostArray(_arena, _type, _count, _blk)              \
+    ((_type*) CORE_MemoryAllocateHost((_alloc), sizeof(_type) * (_count), __alignof(_type), (_blk)))
+#endif
+
+/* @summary Grow or shrink an existing host-visible array.
+ * @param _alloc The CORE_MEMORY_ALLOCATOR from which the existing allocation was obtained.
+ * @param _type A typename, such as int, specifying the type being allocated.
+ * @param _count The number of elements in the resized array.
+ * @param _oldblk The CORE_MEMORY_BLOCK representing the existing allocation.
+ * @param _newblk The CORE_MEMORY_BLOCK specifying attributes of the resized allocation.
+ * @return A pointer to the start of the resized memory block, or NULL.
+ */
+#ifndef CORE_MemoryReallocHostArray
+#define CORE_MemoryReallocHostArray(_arena, _type, _count, _oldblk, _newblk)   \
+    ((_type*) CORE_MemoryReallocateHost((_alloc), (_oldblk), sizeof(_type) * (_count), __alignof(_type), (_oldblk)))
 #endif
 
 /* Forward-declare types exported by the library */
@@ -98,7 +138,6 @@ struct _CORE_MEMORY_ARENA;
 struct _CORE_MEMORY_ALLOCATOR;
 struct _CORE_MEMORY_ARENA_INIT;
 struct _CORE_MEMORY_ALLOCATOR_INIT;
-struct _CORE_BUDDY_BLOCK_INFO;
 
 /* Define the data representing a pool of host memory allocations. Each pool can be accessed from a single thread only. */
 typedef struct _CORE_HOST_MEMORY_POOL {
@@ -407,6 +446,28 @@ CORE_HostMemoryRelease
     CORE_HOST_MEMORY_ALLOCATION *alloc
 );
 
+/* @summary Determine whether a CORE_MEMORY_BLOCK specifies a valid allocation.
+ * @param block The CORE_MEMORY_BLOCK to examine.
+ * @return Non-zero if the memory block specifies a valid allocation, or zero if the memory block specifies an invalid allocation.
+ */
+CORE_API(int)
+CORE_MemoryBlockIsValid
+(
+    CORE_MEMORY_BLOCK *block
+);
+
+/* @summary Determine whether old_block and new_block point to the same memory location.
+ * @param old_block The CORE_MEMORY_BLOCK representing an existing allocation.
+ * @param new_block The CORE_MEMORY_BLOCK representing the modified allocation.
+ * @return Non-zero if the memory block specifies a valid allocation, or zero if the memory block specifies an invalid allocation.
+ */
+CORE_API(int)
+CORE_MemoryBlockDidMove
+(
+    CORE_MEMORY_BLOCK *old_block, 
+    CORE_MEMORY_BLOCK *new_block
+);
+
 /* @summary Initialize an arena memory allocator.
  * @param arena The CORE_MEMORY_ARENA allocator to initialize.
  * @param init The attributes used to initialize the arena allocator.
@@ -428,6 +489,22 @@ CORE_InitMemoryArena
  */
 CORE_API(int)
 CORE_MemoryArenaAllocate
+(
+    CORE_MEMORY_ARENA *arena, 
+    size_t              size, 
+    size_t         alignment, 
+    CORE_MEMORY_BLOCK *block
+);
+
+/* @summary Sub-allocate memory from an arena managing host memory.
+ * @param arena The CORE_MEMORY_ARENA from which the memory is being requested.
+ * @param size The minimum number of bytes to allocate from the arena.
+ * @param alignment The desired alignment of the returned address or offset, in bytes. This must be a non-zero power-of-two.
+ * @param block On return, information about the allocated memory block is copied to this location. Optional.
+ * @return A pointer to the host memory, or NULL.
+ */
+CORE_API(void*)
+CORE_MemoryArenaAllocateHost
 (
     CORE_MEMORY_ARENA *arena, 
     size_t              size, 
@@ -472,8 +549,8 @@ CORE_MemoryArenaReset
 CORE_API(size_t)
 CORE_QueryMemoryAllocatorStateSize
 (
-    uint32_t allocation_size_min, 
-    uint32_t allocation_size_max
+    size_t allocation_size_min, 
+    size_t allocation_size_max
 );
 
 /* @summary Initialize a general-purpose memory allocator.
@@ -504,7 +581,26 @@ CORE_MemoryAllocate
     CORE_MEMORY_BLOCK     *block
 );
 
+/* @summary Allocate host memory from a general-purpose allocator managing host memory.
+ * @param alloc The CORE_MEMORY_ALLOCATOR from which the memory will be allocated.
+ * @param size The minimum number of bytes to allocate.
+ * @param alignment The desired alignment of the returned address or offset, in bytes. This must be a non-zero power-of-two.
+ * @param block On return, information about the allocated memory block is copied to this location. Required.
+ * @return A pointer to the host memory, or NULL.
+ */
+CORE_API(void*)
+CORE_MemoryAllocateHost
+(
+    CORE_MEMORY_ALLOCATOR *alloc, 
+    size_t                  size, 
+    size_t             alignment, 
+    CORE_MEMORY_BLOCK     *block
+);
+
 /* @summary Grow or shrink a memory block to meet a desired size.
+ * This function differs from realloc in that the caller must compare the BlockOffset or HostAddress returned in new_block to the BlockOffset or HostAddress in existing.
+ * If the new_block specifies a different memory location, the caller must copy data from the old location to the new location. 
+ * It is still valid to access the memory at the existing location even though the block has been marked free.
  * @param alloc The CORE_MEMORY_ALLOCATOR that returned the existing block.
  * @param existing The CORE_MEMORY_BLOCK representing the existing allocation.
  * @param new_size The new required minimum allocation size, in bytes.
@@ -515,11 +611,29 @@ CORE_MemoryAllocate
 CORE_API(int)
 CORE_MemoryReallocate
 (
-    CORE_MEMORY_ALLOCATOR *alloc, 
-    CORE_MEMORY_BLOCK   existing, 
-    size_t              new_size, 
-    size_t             alignment, 
-    CORE_MEMORY_BLOCK *new_block
+    CORE_MEMORY_ALLOCATOR *                   alloc, 
+    CORE_MEMORY_BLOCK     * CORE_RESTRICT  existing, 
+    size_t                                 new_size, 
+    size_t                                alignment, 
+    CORE_MEMORY_BLOCK     * CORE_RESTRICT new_block
+);
+
+/* @summary Grow or shrink a memory block to meet a desired size.
+ * @param alloc The CORE_MEMORY_ALLOCATOR that returned the existing block.
+ * @param existing The CORE_MEMORY_BLOCK representing the existing allocation.
+ * @param new_size The new required minimum allocation size, in bytes.
+ * @param alignment The required alignment of the returned address or offset, in bytes. This must be a non-zero power-of-two.
+ * @param new_block On return, information about the allocated memory block is copied to this location. Required.
+ * @return A pointer to the host memory, which may or may not be the same as existing->HostAddress, or NULL if the reallocation request failed.
+ */
+CORE_API(void*)
+CORE_MemoryReallocateHost
+(
+    CORE_MEMORY_ALLOCATOR *                   alloc, 
+    CORE_MEMORY_BLOCK     * CORE_RESTRICT  existing, 
+    size_t                                 new_size, 
+    size_t                                alignment, 
+    CORE_MEMORY_BLOCK     * CORE_RESTRICT new_block
 );
 
 /* @summary Free a general-purpose memory allocation.
@@ -530,7 +644,7 @@ CORE_API(void)
 CORE_MemoryFree
 (
     CORE_MEMORY_ALLOCATOR *alloc, 
-    CORE_MEMORY_BLOCK   existing
+    CORE_MEMORY_BLOCK  *existing
 );
 
 /* @summary Invalidate all existing allocations and reset a memory allocator to its initial state.
@@ -990,6 +1104,8 @@ CORE_HostMemoryReserveAndCommit
     reserve_size = CORE_AlignUp(reserve_size, page_size);
 
     /* map CORE_HOST_MEMORY_ALLOCATION_FLAGS to Win32 access and protection flags */
+    if (alloc_flags ==CORE_HOST_MEMORY_ALLOCATION_FLAGS_DEFAULT)
+        alloc_flags = CORE_HOST_MEMORY_ALLOCATION_FLAGS_READWRITE;
     if (alloc_flags & CORE_HOST_MEMORY_ALLOCATION_FLAG_READ)
         access = PAGE_READONLY;
     if (alloc_flags & CORE_HOST_MEMORY_ALLOCATION_FLAG_WRITE)
@@ -1162,6 +1278,30 @@ CORE_HostMemoryRelease
 }
 
 CORE_API(int)
+CORE_MemoryBlockIsValid
+(
+    CORE_MEMORY_BLOCK *block
+)
+{
+    if (block->AllocatorType == CORE_MEMORY_ALLOCATOR_TYPE_HOST)
+        return (block->HostAddress != NULL) ? 1 : 0;
+    if (block->AllocatorType == CORE_MEMORY_ALLOCATOR_TYPE_DEVICE)
+        return  1;
+    else
+        return  0;
+}
+
+CORE_API(int)
+CORE_MemoryBlockDidMove
+(
+    CORE_MEMORY_BLOCK *old_block, 
+    CORE_MEMORY_BLOCK *new_block
+)
+{
+    return (new_block->BlockOffset == old_block->BlockOffset) ? 0 : 1;
+}
+
+CORE_API(int)
 CORE_InitMemoryArena
 (
     CORE_MEMORY_ARENA     *arena, 
@@ -1175,15 +1315,8 @@ CORE_InitMemoryArena
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
-    if (init->MemorySize == 0 || init->MemorySize == CORE_MEMORY_ALLOCATION_FAILED)
+    if (init->MemorySize == 0)
     {   assert(init->MemorySize != 0);
-        assert(init->MemorySize != CORE_MEMORY_ALLOCATION_FAILED);
-        ZeroMemory(arena, sizeof(CORE_MEMORY_ARENA));
-        SetLastError(ERROR_INVALID_PARAMETER);
-        return -1;
-    }
-    if (init->MemoryStart == CORE_MEMORY_ALLOCATION_FAILED)
-    {   assert(init->MemoryStart != CORE_MEMORY_ALLOCATION_FAILED);
         ZeroMemory(arena, sizeof(CORE_MEMORY_ARENA));
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
@@ -1242,6 +1375,24 @@ CORE_MemoryArenaAllocate
     }
 }
 
+CORE_API(void*)
+CORE_MemoryArenaAllocateHost
+(
+    CORE_MEMORY_ARENA *arena, 
+    size_t              size, 
+    size_t         alignment, 
+    CORE_MEMORY_BLOCK *block
+)
+{
+    CORE_MEMORY_BLOCK  dummy;
+    if (block == NULL) block = &dummy;
+    if (CORE_MemoryArenaAllocate(arena, size, alignment, block) == 0)
+    {   /* the allocation request was satisfied */
+        return block->HostAddress;
+    }
+    else return NULL;
+}
+
 CORE_API(CORE_MEMORY_ARENA_MARKER)
 CORE_MemoryArenaMark
 (
@@ -1273,8 +1424,8 @@ CORE_MemoryArenaReset
 CORE_API(size_t)
 CORE_QueryMemoryAllocatorStateSize
 (
-    uint32_t allocation_size_min, 
-    uint32_t allocation_size_max
+    size_t allocation_size_min, 
+    size_t allocation_size_max
 )
 {   
     unsigned long max_bit = 0;
@@ -1312,14 +1463,15 @@ CORE_InitMemoryAllocator
     CORE_MEMORY_ALLOCATOR_INIT *init
 )
 {
-    unsigned long max_bit = 0;
-    unsigned long min_bit = 0;
-    size_t      level_bit;
-    size_t    level_index;
-    size_t    level_count;
-    size_t free_list_size;
-    size_t     index_size;
-    size_t  required_size;
+    unsigned long  max_bit = 0;
+    unsigned long  min_bit = 0;
+    size_t       level_bit;
+    size_t     level_index;
+    size_t     level_count;
+    size_t  free_list_size;
+    size_t      index_size;
+    size_t   required_size;
+    size_t  total_mem_size = init->MemorySize + init->BytesReserved;
 
     /* basic parameter validation */
     if (init->AllocatorType != CORE_MEMORY_ALLOCATOR_TYPE_HOST && 
@@ -1329,15 +1481,14 @@ CORE_InitMemoryAllocator
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
-    if (init->MemorySize == 0 || init->MemorySize == CORE_MEMORY_ALLOCATION_FAILED)
+    if (init->MemorySize == 0)
     {   assert(init->MemorySize != 0);
-        assert(init->MemorySize != CORE_MEMORY_ALLOCATION_FAILED);
         ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
-    if (init->MemoryStart == CORE_MEMORY_ALLOCATION_FAILED)
-    {   assert(init->MemoryStart != CORE_MEMORY_ALLOCATION_FAILED);
+    if ((total_mem_size & (total_mem_size-1)) != 0)
+    {   assert((total_mem_size & (total_mem_size-1)) == 0 && "init->MemorySize+init->BytesReserved must be a power-of-two");
         ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
@@ -1407,8 +1558,8 @@ CORE_InitMemoryAllocator
     ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
     alloc->AllocatorName     = init->AllocatorName;
     alloc->AllocatorType     = init->AllocatorType;
-    alloc->MemoryStart       = init->MemoryStart;
-    alloc->MemorySize        = init->MemorySize;
+    alloc->MemoryStart       = init->MemoryStart - init->BytesReserved;
+    alloc->MemorySize        = init->MemorySize  + init->BytesReserved;
     alloc->AllocationSizeMin = init->AllocationSizeMin;
     alloc->AllocationSizeMax = init->AllocationSizeMax;
     alloc->BytesReserved     = init->BytesReserved;
@@ -1480,14 +1631,14 @@ CORE_MemoryAllocate
     if (alignment > alloc->AllocationSizeMin)
     {   assert(alignment <= alloc->AllocationSizeMin);
         SetLastError(ERROR_INVALID_PARAMETER);
-        return CORE_MEMORY_ALLOCATION_FAILED;
+        return -1;
     }
 
     /* round the requested allocation size up to the nearest power of two >= size */
     if ((pow2_size =(uint32_t) CORE__MemoryNextPow2GreaterOrEqual(size)) > alloc->AllocationSizeMax)
     {   assert(pow2_size <= alloc->AllocationSizeMax);
         SetLastError(ERROR_INVALID_PARAMETER);
-        return CORE_MEMORY_ALLOCATION_FAILED;
+        return -1;
     }
 
     /* figure out what level the specified size corresponds to */
@@ -1543,14 +1694,27 @@ CORE_MemoryAllocate
     }
 }
 
+CORE_API(void*)
+CORE_MemoryAllocateHost
+(
+    CORE_MEMORY_ALLOCATOR *alloc, 
+    size_t                  size, 
+    size_t             alignment, 
+    CORE_MEMORY_BLOCK     *block
+)
+{
+    CORE_MemoryAllocate(alloc, size, alignment, block);
+    return block->HostAddress;
+}
+
 CORE_API(int)
 CORE_MemoryReallocate
 (
-    CORE_MEMORY_ALLOCATOR *alloc, 
-    CORE_MEMORY_BLOCK   existing, 
-    size_t              new_size, 
-    size_t             alignment, 
-    CORE_MEMORY_BLOCK *new_block
+    CORE_MEMORY_ALLOCATOR *                   alloc, 
+    CORE_MEMORY_BLOCK     * CORE_RESTRICT  existing, 
+    size_t                                 new_size, 
+    size_t                                alignment, 
+    CORE_MEMORY_BLOCK     * CORE_RESTRICT new_block
 )
 {
     size_t            i, n;
@@ -1568,7 +1732,7 @@ CORE_MemoryReallocate
     CORE__BUDDY_BLOCK_MERGE_INFO merge_info;
     CORE__BUDDY_BLOCK_SPLIT_INFO split_info;
 
-    if (existing.SizeInBytes == 0)
+    if (existing->SizeInBytes == 0)
     {   /* there is no existing allocation, so forward to the base allocation routine */
         return CORE_MemoryAllocate(alloc, new_size, alignment, new_block);
     }
@@ -1599,8 +1763,8 @@ CORE_MemoryReallocate
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
-    offset_u32    = (uint32_t) existing.BlockOffset;
-    pow2_size_old = (uint32_t) existing.SizeInBytes;
+    offset_u32    = (uint32_t) existing->BlockOffset;
+    pow2_size_old = (uint32_t) existing->SizeInBytes;
     _BitScanReverse(&bit_index_old, pow2_size_old);
     _BitScanReverse(&bit_index_new, pow2_size_new);
     level_idx_old = alloc->LevelBits[0] - bit_index_old;
@@ -1608,7 +1772,7 @@ CORE_MemoryReallocate
 
     if (level_idx_new == level_idx_old)
     {   /* case 1: the new_size fits in the same block. don't do anything. */
-        CopyMemory(new_block, &existing, sizeof(CORE_MEMORY_BLOCK));
+        CopyMemory(new_block, existing, sizeof(CORE_MEMORY_BLOCK));
         return 0;
     }
     if (level_idx_new ==(level_idx_old-1))
@@ -1673,8 +1837,8 @@ CORE_MemoryReallocate
         merge_info = CORE__BuddyAllocatorMergeIndexInfo(&block_info);
         alloc->MergeIndex[merge_info.WordIndex] ^= merge_info.Mask;
         new_block->SizeInBytes   = block_info.BlockSize;
-        new_block->BlockOffset   = existing.BlockOffset;
-        new_block->HostAddress   = existing.HostAddress;
+        new_block->BlockOffset   = existing->BlockOffset;
+        new_block->HostAddress   = existing->HostAddress;
         new_block->AllocatorType = alloc->AllocatorType;
         return 0;
     }
@@ -1688,18 +1852,39 @@ CORE_MemoryReallocate
     return 0;
 }
 
+CORE_API(void*)
+CORE_MemoryReallocateHost
+(
+    CORE_MEMORY_ALLOCATOR *                   alloc, 
+    CORE_MEMORY_BLOCK     * CORE_RESTRICT  existing, 
+    size_t                                 new_size, 
+    size_t                                alignment, 
+    CORE_MEMORY_BLOCK     * CORE_RESTRICT new_block
+)
+{
+    if (CORE_MemoryReallocate(alloc, existing, new_size, alignment, new_block) == 0)
+    {   /* the reallocation request was successful. does the data need to be moved? */
+        if (new_block->HostAddress != existing->HostAddress)
+        {   /* the memory location changed; the data needs to be copied */
+            CopyMemory(new_block->HostAddress, existing->HostAddress, (size_t) new_block->SizeInBytes);
+        }
+        return new_block->HostAddress;
+    }
+    else return NULL;
+}
+
 CORE_API(void)
 CORE_MemoryFree
 (
     CORE_MEMORY_ALLOCATOR *alloc, 
-    CORE_MEMORY_BLOCK   existing
+    CORE_MEMORY_BLOCK  *existing
 )
 {
-    if (existing.SizeInBytes >= alloc->AllocationSizeMin)
+    if (existing->SizeInBytes >= alloc->AllocationSizeMin)
     {
         uint32_t                           i, n;
-        uint32_t                     offset_u32 = (uint32_t) existing.BlockOffset;
-        uint32_t                      pow2_size = (uint32_t) existing.SizeInBytes;
+        uint32_t                     offset_u32 = (uint32_t) existing->BlockOffset;
+        uint32_t                      pow2_size = (uint32_t) existing->SizeInBytes;
         uint32_t                      level_idx =  0;
         unsigned long                 bit_index =  0;
         uint32_t                   merge_offset;
