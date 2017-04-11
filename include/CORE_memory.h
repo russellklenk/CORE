@@ -1638,6 +1638,11 @@ CORE_MemoryAllocate
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
+    if (size > (size_t)(alloc->MemorySize - alloc->BytesReserved))
+    {   /* the allocation size exceeds the amount of memory actually available */
+        ZeroMemory(block, sizeof(CORE_MEMORY_BLOCK));
+        return -1;
+    }
 
     /* round the requested allocation size up to the nearest power of two >= size */
     if ((pow2_size =(uint32_t) CORE__MemoryNextPow2GreaterOrEqual(size)) > alloc->AllocationSizeMax)
@@ -1685,6 +1690,12 @@ CORE_MemoryAllocate
             block->BlockOffset   = return_offset;
             block->HostAddress   = alloc->AllocatorType == CORE_MEMORY_ALLOCATOR_TYPE_HOST ? ((uint8_t*) alloc->MemoryStart + return_offset) : NULL;
             block->AllocatorType = alloc->AllocatorType;
+            /* if this was a level 0 allocation (the largest possible block size)
+             * then SizeInBytes may have to be adjusted downward by BytesReserved. */
+            if (level_idx == 0)
+            {
+                block->SizeInBytes -= alloc->BytesReserved;
+            }
             return 0;
         }
         if (check_idx != 0)
@@ -1755,6 +1766,11 @@ CORE_MemoryReallocate
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
+    if (new_size > (size_t)(alloc->MemorySize - alloc->BytesReserved))
+    {   /* the allocation size exceeds the amount of memory actually available */
+        ZeroMemory(new_block, sizeof(CORE_MEMORY_BLOCK));
+        return -1;
+    }
 
     /* there are four scenarios this routine has to account for:
      * 1. The new_size still fits in the same block. No re-allocation is performed.
@@ -1769,7 +1785,7 @@ CORE_MemoryReallocate
         return -1;
     }
     offset_u32    = (uint32_t) existing->BlockOffset;
-    pow2_size_old = (uint32_t) existing->SizeInBytes;
+    pow2_size_old = (uint32_t) CORE__MemoryNextPow2GreaterOrEqual(existing->SizeInBytes); /* if existing is a level 0 allocation it may not be a power-of-two */
     _BitScanReverse(&bit_index_old, pow2_size_old);
     _BitScanReverse(&bit_index_new, pow2_size_new);
     level_idx_old = alloc->LevelBits[0] - bit_index_old;
@@ -1817,6 +1833,12 @@ CORE_MemoryReallocate
             new_block->BlockOffset   = merge_offset;
             new_block->HostAddress   = alloc->AllocatorType == CORE_MEMORY_ALLOCATOR_TYPE_HOST ? ((uint8_t*) alloc->MemoryStart + merge_offset) : NULL;
             new_block->AllocatorType = alloc->AllocatorType;
+            /* if this was a level 0 allocation (the largest possible block size)
+             * then SizeInBytes may have to be adjusted downward by BytesReserved. */
+            if (level_idx_new == 0)
+            {
+                new_block->SizeInBytes -= alloc->BytesReserved;
+            }
             return 0;
         }
     }
@@ -1889,7 +1911,7 @@ CORE_MemoryFree
     {
         uint32_t                           i, n;
         uint32_t                     offset_u32 = (uint32_t) existing->BlockOffset;
-        uint32_t                      pow2_size = (uint32_t) existing->SizeInBytes;
+        uint32_t                      pow2_size = (uint32_t) CORE__MemoryNextPow2GreaterOrEqual(existing->SizeInBytes); /* a level 0 allocation may not have a power-of-two size */
         uint32_t                      level_idx =  0;
         unsigned long                 bit_index =  0;
         uint32_t                   merge_offset;
@@ -1960,7 +1982,9 @@ CORE_MemoryAllocatorReset
     if (alloc->BytesReserved > 0)
     {   /* allocate small blocks until BytesReserved is met. 
            allocating the smallest block size ensures the least amount of waste.
-           contiguous blocks will be allocated, starting from offset 0. */
+           contiguous blocks will be allocated, starting from invalid high addresses
+           down to alloc->MemoryStart+(alloc->MemorySize-alloc->BytesReserved). 
+           this leaves the user allocations to take up all of the valid address space. */
         uint32_t  level_size = 1 << alloc->LevelBits[alloc->LevelCount-1];
         uint32_t block_count =(uint32_t)((alloc->BytesReserved + (level_size-1)) / level_size);
         uint32_t block_index;
@@ -1968,6 +1992,8 @@ CORE_MemoryAllocatorReset
         for (block_index = 0; block_index < block_count; ++block_index)
         {
             (void) CORE_MemoryAllocate(alloc, level_size, level_size, &b);
+            assert((uint64_t) b.HostAddress >= (alloc->MemoryStart+(alloc->MemorySize-alloc->BytesReserved)));
+            assert(b.BlockOffset >= alloc->MemorySize);
         }
     }
 }
