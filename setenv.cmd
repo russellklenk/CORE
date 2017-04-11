@@ -47,6 +47,7 @@ SET PROJECT_NAME=CORE
 :: Set the project build outputs.
 SET CORE_ENGINE_VERSION_RC=CORE_version.res
 SET CORE_TEST_CLIENT_OUTPUT=CORE_client.exe
+SET CORE_MEMTEST_OUTPUT=CORE_memtest.exe
 
 :: Set the appropriate Visual C++ toolset environment.
 IF /I "%1" EQU "32" (
