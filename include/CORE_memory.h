@@ -1449,7 +1449,7 @@ CORE_QueryMemoryAllocatorStateSize
     _BitScanReverse  (&min_bit, allocation_size_min);
     _BitScanReverse  (&max_bit, allocation_size_max);
 #endif
-    level_count    = ( max_bit-min_bit);
+    level_count    = ((max_bit - min_bit)  + 1);
     free_list_size = (1 << level_count)    * 4; /* 4 = sizeof(uint32_t), magic number to avoid conversion warning */
     index_size     = (1 <<(level_count-1)) / 8; /* 8 = number of bits per-byte */
     total_size     = (2 *  index_size) + free_list_size;
@@ -1501,21 +1501,21 @@ CORE_InitMemoryAllocator
     }
     if (init->StateData == NULL || init->StateDataSize == 0)
     {   assert(init->StateData != NULL);
-        assert(init->SatteDataSize > 0);
+        assert(init->StateDataSize > 0);
         ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
     /* arguments must be powers of two greater than zero */
     if ((init->AllocationSizeMin & (init->AllocationSizeMin-1)) != 0 || init->AllocationSizeMin < 16)
-    {   assert((init->AllocationSizeMin & (init->AllocationSizeMin-1) != 0) && "AllocationSizeMin must be a power-of-two");
+    {   assert((init->AllocationSizeMin & (init->AllocationSizeMin-1)) == 0 && "AllocationSizeMin must be a power-of-two");
         assert(init->AllocationSizeMin >= 16);
         ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
     if ((init->AllocationSizeMax & (init->AllocationSizeMax-1)) != 0 || init->AllocationSizeMax < init->AllocationSizeMin)
-    {   assert((init->AllocationSizeMax & (init->AllocationSizeMax-1) != 0) && "AllocationSizeMax must be a power-of-two");
+    {   assert((init->AllocationSizeMax & (init->AllocationSizeMax-1)) == 0 && "AllocationSizeMax must be a power-of-two");
         assert(init->AllocationSizeMin < init->AllocationSizeMax);
         ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
         SetLastError(ERROR_INVALID_PARAMETER);
@@ -1537,7 +1537,7 @@ CORE_InitMemoryAllocator
     _BitScanReverse  (&max_bit, init->AllocationSizeMax);
 #endif
     level_bit      =   max_bit;
-    level_count    = ( max_bit-min_bit);
+    level_count    = ((max_bit - min_bit)  + 1);
     free_list_size = (1 << level_count)    * 4; /* 4 = sizeof(uint32_t), magic number to avoid conversion warning */
     index_size     = (1 <<(level_count-1)) / 8; /* 8 = number of bits per-byte */
     required_size  = (2 *  index_size) + free_list_size;
@@ -1555,20 +1555,21 @@ CORE_InitMemoryAllocator
     }
 
     /* set up the allocator state */
+    ZeroMemory(init->StateData, init->StateDataSize);
     ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
     alloc->AllocatorName     = init->AllocatorName;
     alloc->AllocatorType     = init->AllocatorType;
-    alloc->MemoryStart       = init->MemoryStart - init->BytesReserved;
+    alloc->MemoryStart       = init->MemoryStart;
     alloc->MemorySize        = init->MemorySize  + init->BytesReserved;
     alloc->AllocationSizeMin = init->AllocationSizeMin;
     alloc->AllocationSizeMax = init->AllocationSizeMax;
     alloc->BytesReserved     = init->BytesReserved;
     alloc->MetadataBase      =(uint8_t *)            init->StateData;
+    alloc->MergeIndex        =(uint32_t*)((uint8_t*) init->StateData + (index_size * 0));
+    alloc->SplitIndex        =(uint32_t*)((uint8_t*) init->StateData + (index_size * 1));
     alloc->FreeListData      =(uint32_t*)((uint8_t*) init->StateData + (index_size * 2));
-    alloc->MergeIndex        =(uint32_t*)((uint8_t*) init->StateData + (index_size * 1));
-    alloc->SplitIndex        =(uint32_t*)((uint8_t*) init->StateData + (index_size * 0));
     alloc->Reserved          = 0;
-    alloc->LevelCount        =(uint32_t ) level_count;
+    alloc->LevelCount        =(uint32_t)level_count;
     for (level_index = 0; level_index < level_count; ++level_index)
     {
         alloc->FreeCount[level_index] = 0;
@@ -1583,14 +1584,18 @@ CORE_InitMemoryAllocator
     if (init->BytesReserved > 0)
     {   /* allocate small blocks until BytesReserved is met. 
            allocating the smallest block size ensures the least amount of waste.
-           contiguous blocks will be allocated, starting from offset 0. */
+           contiguous blocks will be allocated, starting from invalid high addresses
+           down to init->MemoryStart+init->MemorySize. this leaves the user allocations
+           to take up all of the valid address space. */
         uint32_t  level_size = 1 << min_bit;
-        uint32_t block_count =(uint32_t)((init->BytesReserved + level_size) / level_size);
+        uint32_t block_count =(uint32_t)((init->BytesReserved + (level_size-1)) / level_size);
         uint32_t block_index;
         CORE_MEMORY_BLOCK  b;
         for (block_index = 0; block_index < block_count; ++block_index)
         {
             (void) CORE_MemoryAllocate(alloc, level_size, level_size, &b);
+            assert((uint64_t) b.HostAddress >= (init->MemoryStart+init->MemorySize));
+            assert(b.BlockOffset >= init->MemorySize);
         }
     }
     if (init->UserData != NULL && init->UserDataSize > 0)
@@ -1642,7 +1647,7 @@ CORE_MemoryAllocate
     }
 
     /* figure out what level the specified size corresponds to */
-    _BitScanReverse((DWORD*)&bit_index, pow2_size);
+    _BitScanReverse(&bit_index, pow2_size);
     level_idx = alloc->LevelBits[0] - bit_index;
     check_idx = level_idx;
 
@@ -1957,7 +1962,7 @@ CORE_MemoryAllocatorReset
            allocating the smallest block size ensures the least amount of waste.
            contiguous blocks will be allocated, starting from offset 0. */
         uint32_t  level_size = 1 << alloc->LevelBits[alloc->LevelCount-1];
-        uint32_t block_count =(uint32_t)((alloc->BytesReserved + level_size) / level_size);
+        uint32_t block_count =(uint32_t)((alloc->BytesReserved + (level_size-1)) / level_size);
         uint32_t block_index;
         CORE_MEMORY_BLOCK  b;
         for (block_index = 0; block_index < block_count; ++block_index)
