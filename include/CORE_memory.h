@@ -209,34 +209,31 @@ typedef struct _CORE_MEMORY_ARENA_INIT {
 typedef uint64_t CORE_MEMORY_ARENA_MARKER;                   /* This value holds the NextOffset value of the arena allocator state. */
 
 /* Define the data associated with a general-purpose memory allocator based on a buddy allocation scheme. 
- * The buddy allocator can manage a maximum of 4GB, which is divided into power-of-two sized chunks between a minimum and maximum size.
- * CORE_BUDDY_ALLOCATOR_MAX_LEVELS defines the maximum number of power-of-two steps between the minimum and maximum size.
+ * CORE_MEMORY_ALLOCATOR_MAX_LEVELS defines the maximum number of power-of-two steps between the minimum and maximum size.
  * If aligned allocations will be required, the minimum block size should be set to the required alignment.
  * The CORE_MEMORY_ALLOCATOR supports general-purpose allocation operations such as malloc, realloc and free.
  * See http://bitsquid.blogspot.com/2015/08/allocation-adventures-3-buddy-allocator.html
  */
-#ifndef CORE_BUDDY_ALLOCATOR_MAX_LEVELS
-#define CORE_BUDDY_ALLOCATOR_MAX_LEVELS  16
+#ifndef CORE_MEMORY_ALLOCATOR_MAX_LEVELS
+#define CORE_MEMORY_ALLOCATOR_MAX_LEVELS 16
 #endif
 typedef struct _CORE_MEMORY_ALLOCATOR {
-    #define NLVL CORE_BUDDY_ALLOCATOR_MAX_LEVELS
+    #define NLVL CORE_MEMORY_ALLOCATOR_MAX_LEVELS
     #define USER CORE_MEMORY_ALLOCATOR_MAX_USER
     char const                          *AllocatorName;      /* A nul-terminated string specifying the name of the allocator. Used for debugging purposes only. */
     uint32_t                             AllocatorType;      /* One of _CORE_MEMORY_ALLOCATOR_TYPE indicating whether this is a host or device memory allocator. */
+    uint32_t                             LevelCount;         /* The total number of levels used by the allocator, with level 0 representing the largest level. */
     uint64_t                             MemoryStart;        /* The address or offset of the start of the memory block from which sub-allocations are returned. */
     uint64_t                             MemorySize;         /* The size of the memory block from which sub-allocations are returned, in bytes. */
     uint64_t                             AllocationSizeMin;  /* The size of the smallest memory block that can be returned by the buddy allocator, in bytes. */
     uint64_t                             AllocationSizeMax;  /* The size of the largest memory block that can be returned by the buddy allocator, in bytes. */
     uint64_t                             BytesReserved;      /* The number of bytes marked as reserved. These bytes can never be allocated to the application. */
-    uint8_t                             *MetadataBase;       /* The base address of the metadata storage allocation. */
-    uint32_t                            *FreeListData;       /* Storage for the free list arrays, allocated as a single contiguous block. There are 1 << LevelCount uint32_t values. */
-    uint32_t                            *MergeIndex;         /* An array of 1 << (LevelCount-1) bits with each bit storing the state of a buddy pair. */
-    uint32_t                            *SplitIndex;         /* An array of 1 << (LevelCount-1) bits with each bit set if the block at bit index i has been split. */
-    uint32_t                             Reserved;           /* Reserved for future use. Set to zero. */
-    uint32_t                             LevelCount;         /* The total number of levels used by the allocator, with level 0 representing the largest level. */
+    uint8_t                             *SplitIndex;         /* An array of 1 << (LevelCount-1) bits with each bit set if the block at bit index i has been split. */
+    uint64_t                             SplitIndexSize;     /* The size of the split index data, in bytes */
+    uint8_t                             *StatusIndex;        /* An array of 1 << (LevelCount) bits with each bit set if the block at bit index i is available. */
+    uint64_t                             StatusIndexSize;    /* The size of the status index data, in bytes */
     uint32_t                             LevelBits[NLVL];    /* The zero-based index of the set bit for each level. LevelCount entries are valid. */
     uint32_t                             FreeCount[NLVL];    /* The number of entries in the free list for each level. LevelCount entries are valid. */
-    uint32_t                            *FreeLists[NLVL];    /* Each of LevelCount entries points to an array of 1 << LevelIndex values specifying free block offsets for that level. */
     void                                *StateData;          /* The caller-allocated memory to be used for storing allocator state data. */
     uint64_t                             StateDataSize;      /* The number of bytes of state data available for use by the allocator instance. */
     uint8_t                              UserData[USER];     /* Extra storage for data the user wants to associate with the allocator instance. */
@@ -664,36 +661,114 @@ CORE_MemoryAllocatorReset
 
 #ifdef CORE_MEMORY_IMPLEMENTATION
 
-/* Define the information used to look up the status of a block in the buddy allocator merge index.
- * The merge index contains one bit per buddy-pair. 
- * The bit is clear if both blocks are free, or bother are allocated.
- * The bit is set if only one block is allocated.
- */
-typedef struct _CORE__BUDDY_BLOCK_MERGE_INFO {
-    uint32_t WordIndex;          /* The zero-based index of the uint32_t value in the CORE_MEMORY_ALLOCATOR::MergeIndex field. */
-    uint32_t Mask;               /* The mask value used to test or manipulate the state of the bit. */
-} CORE__BUDDY_BLOCK_MERGE_INFO;
+#ifdef _M_X64
+    /* @summary Define the number of bits in a machine word. */
+    #ifndef CORE_MEMORY_WORDSIZE_BITS
+    #define CORE_MEMORY_WORDSIZE_BITS               64
+    #endif
 
-/* Define the information used to look up the status of a block in the buddy allocator split index.
- * The split index contains one bit per-block for each level not including the leaf level.
- * The bit is set if the corresponding block has been split.
- */
-typedef struct _CORE__BUDDY_BLOCK_SPLIT_INFO {
-    uint32_t WordIndex;          /* The zero-based index of the uint32_t value in the CORE_MEMORY_ALLOCATOR::SplitIndex field. */
-    uint32_t Mask;               /* The mask value used to test or manipulate the state of the bit. */
-} CORE__BUDDY_BLOCK_SPLIT_INFO;
+    /* @summary Define the number of bytes in a machine word. */
+    #ifndef CORE_MEMORY_WORDSIZE_BYTES
+    #define CORE_MEMORY_WORDSIZE_BYTES              8
+    #endif
 
-/* Define the data returned from a buddy allocator block query. */
-typedef struct _CORE__BUDDY_BLOCK_INFO {
-    uint32_t LevelIndex;         /* The zero-based index of the level at which the block was allocated, with level 0 being the largest level. */
-    uint32_t BitIndex;           /* The zero-based index of the bit that is set for blocks in this level. */
-    uint32_t BlockSize;          /* The size of the blocks in this level, in bytes. */
-    uint32_t BlockCount;         /* The maximum number of blocks in this level. */
-    uint32_t IndexOffset;        /* The offset used to transform an absolute index into a relative index. */
-    uint32_t LeftAbsoluteIndex;  /* The absolute block index of the leftmost block of the buddy pair, either BlockAbsoluteIndex or BuddyAbsoluteIndex. */
-    uint32_t BlockAbsoluteIndex; /* The absolute block index of the input block. */
-    uint32_t BuddyAbsoluteIndex; /* The absolute block index of the buddy of the input block. */
-} CORE__BUDDY_BLOCK_INFO;
+    /* @summary Define the shift value used to multiply or divide by the machine word size in bits. */
+    #ifndef CORE_MEMORY_WORDSIZE_SHIFT
+    #define CORE_MEMORY_WORDSIZE_SHIFT              6
+    #endif
+
+    /* @summary Define the mask value used to modulo by the machine word size in bits. */
+    #ifndef CORE_MEMORY_WORDSIZE_MASK
+    #define CORE_MEMORY_WORDSIZE_MASK              (CORE_MEMORY_WORDSIZE_BITS-1)
+    #endif
+
+    /* @summary Define the constant zero in a type of the machine word size. */
+    #ifndef CORE_MEMORY_WORDSIZE_ZERO
+    #define CORE_MEMORY_WORDSIZE_ZERO               0ULL
+    #endif
+
+    /* @summary Define the constant one in a type of the machine word size. */
+    #ifndef CORE_MEMORY_WORDSIZE_ONE
+    #define CORE_MEMORY_WORDSIZE_ONE                1ULL
+    #endif
+
+    /* @summary Define the intrinsic used to locate the first set bit in a machine word, starting from the LSB. */
+    #ifndef CORE_BitScanForward
+    #define CORE_BitScanForward(_value, _setbit)    _BitScanForward64((_value), (_setbit))
+    #endif
+
+    /* @summary Define the intrinsic used to locate the fist set bit in a machine word, starting from the MSB. */
+    #ifndef CORE_BitScanReverse
+    #define CORE_BitScanReverse(_value, _setbit)    _BitScanReverse64((_value), (_setbit))
+    #endif
+
+    /* @summary Define a type used for holding a machine word. */
+    typedef uint64_t                                umword_t;
+#else
+    /* @summary Define the number of bits in a machine word. */
+    #ifndef CORE_MEMORY_WORDSIZE_BITS
+    #define CORE_MEMORY_WORDSIZE_BITS               32
+    #endif
+
+    /* @summary Define the number of bytes in a machine word. */
+    #ifndef CORE_MEMORY_WORDSIZE_BYTES
+    #define CORE_MEMORY_WORDSIZE_BYTES              4
+    #endif
+
+    /* @summary Define the shift value used to multiply or divide by the machine word size in bits. */
+    #ifndef CORE_MEMORY_WORDSIZE_SHIFT
+    #define CORE_MEMORY_WORDSIZE_SHIFT              5
+    #endif
+
+    /* @summary Define the mask value used to modulo by the machine word size in bits. */
+    #ifndef CORE_MEMORY_WORDSIZE_MASK
+    #define CORE_MEMORY_WORDSIZE_MASK              (CORE_MEMORY_WORDSIZE_BITS-1)
+    #endif
+
+    /* @summary Define the constant zero in a type of the machine word size. */
+    #ifndef CORE_MEMORY_WORDSIZE_ZERO
+    #define CORE_MEMORY_WORDSIZE_ZERO               0UL
+    #endif
+
+    /* @summary Define the constant one in a type of the machine word size. */
+    #ifndef CORE_MEMORY_WORDSIZE_ONE
+    #define CORE_MEMORY_WORDSIZE_ONE                1UL
+    #endif
+
+    /* @summary Define the intrinsic used to locate the first set bit in a machine word, starting from the LSB. */
+    #ifndef CORE_BitScanForward
+    #define CORE_BitScanForward(_value, _setbit)    _BitScanForward((_value), (_setbit))
+    #endif
+
+    /* @summary Define the intrinsic used to locate the fist set bit in a machine word, starting from the MSB. */
+    #ifndef CORE_BitScanReverse
+    #define CORE_BitScanReverse(_value, _setbit)    _BitScanReverse((_value), (_setbit))
+    #endif
+
+    /* @summary Define a type used for holding a machine word. */
+    typedef uint32_t                                umword_t;
+#endif
+
+/* @summary Define the data returned from a memory allocator index size query. */
+typedef struct _CORE__MEMORY_INDEX_SIZE {
+    uint64_t SplitIndexSize;      /* The size of the split index data, in bytes. This value is always an even multiple of the machine word size. */
+    uint64_t StatusIndexSize;     /* The size of the status index data, in bytes. This value is always an even multiple of the machine word size. */
+    uint64_t TotalIndexSize;      /* The total required size for all index data, in bytes. This value is always an even multiple of the machine word size. */
+} CORE__MEMORY_INDEX_SIZE;
+
+/* @summary Define the data returned from a memory allocator block query. */
+typedef struct _CORE__MEMORY_BLOCK_INFO {
+    uint64_t BlockOffset;         /* The zero-based offset of the start of the block from the start of the managed memory range. */
+    uint64_t BlockSize;           /* The size of the blocks in this level, in bytes. */
+    uint32_t LevelIndex;          /* The zero-based index of the level at which the block was allocated, with level 0 being the largest level. */
+    uint32_t BlockCount;          /* The maximum number of blocks in this level. */
+    uint32_t AbsoluteIndexOffset; /* The offset used to transform an absolute index into a relative index. */
+    uint32_t BlockAbsoluteIndex;  /* The absolute block index of the input block. */
+    uint32_t BuddyAbsoluteIndex;  /* The absolute block index of the buddy of the input block. */
+    uint32_t LowerAbsoluteIndex;  /* The absolute block index of the block in the buddy pair with the lowest block offset, either BlockAbsoluteIndex or BuddyAbsoluteIndex. */
+    uint32_t IndexWord;           /* The zero-based index of the 32/64-bit word containing the status bit for the block in the split index or the status index. */
+    umword_t IndexMask;           /* The mask used to access the status bit for the block in the split index or status index. */
+} CORE__MEMORY_BLOCK_INFO;
 
 /* @summary Calculate the next power-of-two value greater than or equal to a given value.
  * @param n The input value.
@@ -713,142 +788,222 @@ CORE__MemoryNextPow2GreaterOrEqual
     return n+1;
 }
 
-/* @summary Push a block offset onto the free list for a given level.
- * @param alloc The CORE_BUDDY_MEMORY_ALLOCATOR_STATE instance to which the free block is being returned.
- * @param offset The byte offset of the start of the allocated block.
- * @param level The zero-based index of the level to which the block belongs.
- */
-static void
-CORE__BuddyAllocatorPushFreeOffset
-(
-    CORE_MEMORY_ALLOCATOR *alloc, 
-    uint32_t              offset,
-    uint32_t               level
-)
-{
-    uint32_t count = alloc->FreeCount[level];
-    alloc->FreeLists[level][count] = offset;
-    alloc->FreeCount[level] = count+1;
-}
-
-/* @summary Pop a block offset from the free list for a given level. The caller must ensure that the free list for the specified level is non-empty.
- * @param alloc The CORE_BUDDY_MEMORY_ALLOCATOR_STATE instance from which the free block is being obtained.
- * @param level The zero-based index of the level to which the block belongs.
- * @return The byte offset of the free block.
- */
-static uint32_t
-CORE__BuddyAllocatorPopFreeOffset
-(
-    CORE_MEMORY_ALLOCATOR *alloc, 
-    uint32_t               level
-)
-{
-    uint32_t   count = alloc->FreeCount[level];
-    uint32_t  offset = alloc->FreeLists[level][count-1];
-    alloc->FreeCount[level] = count-1;
-    return offset;
-}
-
-/* @summary Retrieve the information necessary to look up the status bit in the buddy allocator merge index for a block.
- * @param block Information about the memory block, retrieved by a prior call to CORE_BuddyAllocatorBlockInfo.
- * @return The merge index information, indicating which uint32_t to access and the mask used to access the bit for the buddy pair in the merge index.
- */
-static CORE__BUDDY_BLOCK_MERGE_INFO
-CORE__BuddyAllocatorMergeIndexInfo
-(
-    CORE__BUDDY_BLOCK_INFO *block
-)
-{
-    CORE__BUDDY_BLOCK_MERGE_INFO info;
-    info.WordIndex =  block->LeftAbsoluteIndex >> 5;
-    info.Mask = 1 << (block->LeftAbsoluteIndex & 31);
-    return info;
-}
-
-/* @summary Retrieve the information necessary to look up the status bit in the buddy allocator split index for a block.
- * @param block Information about the memory block, retrieved by a prior call to CORE_BuddyAllocatorBlockInfo.
- * @return The split index information, indicating which uint32_t to access and the mask used to access the bit for the block in the split index.
- */
-static CORE__BUDDY_BLOCK_SPLIT_INFO
-CORE__BuddyAllocatorSplitIndexInfo
-(
-    CORE__BUDDY_BLOCK_INFO *block
-)
-{
-    CORE__BUDDY_BLOCK_SPLIT_INFO info;
-    info.WordIndex =  block->BlockAbsoluteIndex >> 5;
-    info.Mask = 1 << (block->BlockAbsoluteIndex & 31);
-    return info;
-}
-
-/* @summary Query a memory allocator for attributes of an allocated block where the block size is known.
- * @param info The CORE__BUDDY_BLOCK_INFO to populate with information about the block at offset p.
+/* @summary Query a memory allocator for attributes of an allocated block where the block level is known.
+ * @param info The CORE__MEMORY_BLOCK_INFO to populate with information about the block at the specified offset.
  * @param alloc The CORE_MEMORY_ALLOCATOR to query. This must be the same allocator that returned the block.
- * @param p The offset of the block to query.
+ * @param offset The offset of the block to query, relative to the start of the managed memory range.
  * @param level The zero-based index of the level at which the block was allocated.
  */
 static void
-CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel
+CORE__QueryMemoryBlockInfoWithKnownLevel
 (
-    CORE__BUDDY_BLOCK_INFO  *info,
+    CORE__MEMORY_BLOCK_INFO *info,
     CORE_MEMORY_ALLOCATOR  *alloc,
-    uint32_t                    p, 
+    uint64_t               offset, 
     uint32_t                level
 )
 {
-    uint32_t     level_shift = alloc->LevelBits[level];
-    uint32_t     block_count = 1 << level;
-    uint32_t     local_index = p >> level_shift;
-    uint32_t       odd_index = local_index &  1;
-    int32_t     buddy_offset = odd_index   ? -1 : +1; /* can remove this branch? */
-    info->LevelIndex         = level;
-    info->BitIndex           = level_shift;
-    info->BlockSize          = 1 << level_shift;
-    info->BlockCount         = block_count;
-    info->IndexOffset        = block_count - 1;
-    info->LeftAbsoluteIndex  = block_count + (local_index - odd_index) - 1;
-    info->BlockAbsoluteIndex = block_count +  local_index - 1;
-    info->BuddyAbsoluteIndex = block_count + (local_index + buddy_offset) - 1;
+    uint32_t  level_shift = alloc->LevelBits[level];
+    uint32_t  block_count = 1 << level;
+    uint32_t  local_index =(uint32_t)(offset >> level_shift);
+    uint32_t    odd_index = local_index &  1;
+    int32_t  buddy_offset = odd_index   ? -1 : +1;
+
+    info->BlockOffset         = offset;
+    info->BlockSize           = CORE_MEMORY_WORDSIZE_ONE << level_shift;
+    info->LevelIndex          = level;
+    info->BlockCount          = block_count;
+    info->AbsoluteIndexOffset = block_count - 1;
+    info->BlockAbsoluteIndex  = block_count +  local_index - 1;
+    info->BuddyAbsoluteIndex  = block_count + (local_index + buddy_offset) - 1;
+    info->LowerAbsoluteIndex  = block_count + (local_index -    odd_index) - 1;
+    info->IndexWord           = info->BlockAbsoluteIndex >> CORE_MEMORY_WORDSIZE_SHIFT;
+    info->IndexMask           = CORE_MEMORY_WORDSIZE_ONE <<(info->BlockAbsoluteIndex & CORE_MEMORY_WORDSIZE_MASK);
 }
 
-/* @summary Query a memory allocator for attributes of an allocated block where the block size is not known.
- * @param info The CORE__BUDDY_BLOCK_INFO to populate with information about the block at offset p.
+/* @summary Locate the first free memory block at a given level. The block with the lowest offset is returned.
+ * @param info The CORE__MEMORY_BLOCK_INFO to populate with information about the block at the specified offset.
  * @param alloc The CORE_MEMORY_ALLOCATOR to query. This must be the same allocator that returned the block.
- * @param p The offset of the block to query.
+ * @param level The zero-based index of the level at which the block was allocated.
+ * @return One if a free memory block is located at the specified level, or zero if the level has no free blocks.
+ */
+static int
+CORE__FindFreeMemoryBlockAtLevel
+(
+    CORE__MEMORY_BLOCK_INFO *block,
+    CORE_MEMORY_ALLOCATOR   *alloc,
+    uint32_t                 level
+)
+{
+    umword_t   *status_index =(umword_t*) alloc->StatusIndex;
+    uint64_t      block_size = 1ULL << alloc->LevelBits[level];
+    uint32_t     block_count = 1UL  << level;
+    uint32_t level_first_bit =(1UL  << level)  - 1;
+    uint32_t level_final_bit =(level_first_bit + block_count) - 1;
+    uint32_t    word_index_0 = level_first_bit >> CORE_MEMORY_WORDSIZE_SHIFT;
+    uint32_t    word_index_N = level_final_bit >> CORE_MEMORY_WORDSIZE_SHIFT;
+    uint32_t      word_count =(word_index_N - word_index_0) + 1;
+    uint32_t     word_bits_0 = block_count <  CORE_MEMORY_WORDSIZE_BITS ? block_count : CORE_MEMORY_WORDSIZE_BITS - (level_first_bit & CORE_MEMORY_WORDSIZE_MASK); /* # of bits set in first word */
+    uint32_t     word_bits_N = block_count <  CORE_MEMORY_WORDSIZE_BITS ? block_count : CORE_MEMORY_WORDSIZE_BITS - (level_final_bit & CORE_MEMORY_WORDSIZE_MASK); /* # of bits set in final word */
+    umword_t     word_mask_0 = word_bits_0 == CORE_MEMORY_WORDSIZE_BITS ? ~CORE_MEMORY_WORDSIZE_ZERO : (((CORE_MEMORY_WORDSIZE_ONE << word_bits_0) - 1) << level_first_bit);
+    umword_t     word_mask_N = word_bits_N == CORE_MEMORY_WORDSIZE_BITS ? ~CORE_MEMORY_WORDSIZE_ZERO : (((CORE_MEMORY_WORDSIZE_ONE << word_bits_N) - 1) << level_first_bit);
+    uint32_t      word_index = 0;
+    uint32_t     block_index;
+    uint32_t     local_index;
+    uint32_t       odd_index;
+    int32_t     buddy_offset;
+    unsigned long    set_bit;
+    
+    /* check the first word */
+    if (CORE_BitScanForward(&set_bit, status_index[word_index_0] & word_mask_0))
+    {   /* found a free block in the first word */
+        word_index = 0;
+        goto found_free_block;
+    }
+    else
+    {   /* no free blocks in the first word; check the remaining words */
+        word_index = 1;
+    }
+    if (word_count > 1)
+    {   /* check full words CORE_MEMORY_WORDSIZE_BITS at a time */
+        uint32_t full_word_count = word_count - 2;
+        uint32_t full_word_index = 0;
+        while   (full_word_index < full_word_count)
+        {
+            if (CORE_BitScanForward(&set_bit, status_index[word_index]))
+            {
+                goto found_free_block;
+            }
+            full_word_index++;
+            word_index++;
+        }
+        /* still haven't found a free block so check the final word */
+        if (CORE_BitScanForward(&set_bit, status_index[word_index_N] & word_mask_N))
+        {
+            word_index = word_index_N;
+            goto found_free_block;
+        }
+    }
+    /* there are no free blocks at this level */
+    return 0;
+
+found_free_block:
+    local_index                =(word_index << CORE_MEMORY_WORDSIZE_SHIFT) + set_bit - level_first_bit;
+    block_index                = level_first_bit  + local_index;
+    odd_index                  = local_index &  1;
+    buddy_offset               = odd_index   ? -1 : +1;
+    block->BlockOffset         = local_index * block_size;
+    block->BlockSize           = block_size;
+    block->LevelIndex          = level;
+    block->BlockCount          = block_count;
+    block->AbsoluteIndexOffset = level_first_bit;
+    block->BlockAbsoluteIndex  = block_index;
+    block->BuddyAbsoluteIndex  = block_count + (local_index + buddy_offset) - 1;
+    block->LowerAbsoluteIndex  = block_count + (local_index -    odd_index) - 1;
+    block->IndexWord           = word_index;
+    block->IndexMask           = CORE_MEMORY_WORDSIZE_ONE << (block_index & CORE_MEMORY_WORDSIZE_MASK);
+    return 1;
+}
+
+/* @summary Query a memory allocator for attributes of an allocated block where only the block offset known.
+ * @param info The CORE__MEMORY_BLOCK_INFO to populate with information about the block at the specified offset.
+ * @param alloc The CORE_MEMORY_ALLOCATOR to query. This must be the same allocator that returned the block.
+ * @param offset The offset of the block to query, relative to the start of the managed memory range.
  * @return Zero if the block information was retrieved, or -1 if the block offset is invalid.
  */
 static int
-CORE__QueryBuddyAllocatorBlockInfo
+CORE__QueryMemoryBlockInfo
 (
-    CORE__BUDDY_BLOCK_INFO *info, 
-    CORE_MEMORY_ALLOCATOR *alloc, 
-    uint32_t                   p
+    CORE__MEMORY_BLOCK_INFO *info, 
+    CORE_MEMORY_ALLOCATOR  *alloc, 
+    uint32_t               offset
 )
 {
-    CORE__BUDDY_BLOCK_INFO       block;
-    CORE__BUDDY_BLOCK_SPLIT_INFO split;
-    uint32_t level_index = alloc->LevelCount - 1;
-    while   (level_index > 0)
+    umword_t *split_index =(umword_t*) alloc->SplitIndex;
+    uint32_t  level_index = alloc->LevelCount - 1;
+    CORE__MEMORY_BLOCK_INFO block;
+
+    while (level_index > 0)
     {   /* check the parent level to see if it's been split */
-        CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(info, alloc, p, level_index-1);
-        split = CORE__BuddyAllocatorSplitIndexInfo(&block);
-        if ((alloc->SplitIndex[split.WordIndex] & split.Mask) != 0)
+        CORE__QueryMemoryBlockInfoWithKnownLevel(&block, alloc, offset, level_index-1);
+        if ((split_index[block.IndexWord] & block.IndexMask) != 0)
         {   /* reached a split parent; the block level is level_index */
-            CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(info, alloc, p, level_index);
+            CORE__QueryMemoryBlockInfoWithKnownLevel(info, alloc, offset, level_index);
             return 0;
         }
         /* the parent has not been split, so check the next-largest level */
         level_index--;
     }
-    if (p == alloc->MemoryStart)
+    if (offset == 0)
     {   /* this is a level-0 block (there's only one) */
-        CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(info, alloc, p, 0);
+        CORE__QueryMemoryBlockInfoWithKnownLevel(info, alloc, offset, 0);
         return  0;
     }
     else
     {   /* the offset or address is invalid */
+        ZeroMemory(info, sizeof(CORE__MEMORY_BLOCK_INFO));
         return -1;
     }
+}
+
+/* @summary Update the status index to mark a memory block as used.
+ * @param block Information about the memory block to mark as used.
+ * @param alloc The CORE_MEMORY_ALLOCATOR managing the block.
+ */
+static void
+CORE__MarkMemoryBlockUsed
+(
+    CORE__MEMORY_BLOCK_INFO *block, 
+    CORE_MEMORY_ALLOCATOR   *alloc
+)
+{
+    umword_t *status_index =(umword_t*)alloc->StatusIndex;
+    status_index[block->IndexWord] &= ~block->IndexMask;
+}
+
+/* @summary Update the status index to mark a memory block as free.
+ * @param block Information about the memory block to mark as free.
+ * @param alloc The CORE_MEMORY_ALLOCATOR managing the block.
+ */
+static void
+CORE__MarkMemoryBlockFree
+(
+    CORE__MEMORY_BLOCK_INFO *block, 
+    CORE_MEMORY_ALLOCATOR   *alloc
+)
+{
+    umword_t *status_index =(umword_t*)alloc->StatusIndex;
+    status_index[block->IndexWord] |=  block->IndexMask;
+}
+
+/* @summary Update the split index to mark a memory block as having been split.
+ * @param block Information about the memory block to mark as split.
+ * @param alloc The CORE_MEMORY_ALLOCATOR managing the block.
+ */
+static void
+CORE__MarkMemoryBlockSplit
+(
+    CORE__MEMORY_BLOCK_INFO *block, 
+    CORE_MEMORY_ALLOCATOR   *alloc
+)
+{
+    umword_t *split_index =(umword_t*)alloc->SplitIndex;
+    split_index[block->IndexWord] |=  block->IndexMask;
+}
+
+/* @summary Update the split index to mark a memory block as having been merged.
+ * @param block Information about the memory block to mark as merged.
+ * @param alloc The CORE_MEMORY_ALLOCATOR managing the block.
+ */
+static void
+CORE__MarkMemoryBlockWhole
+(
+    CORE__MEMORY_BLOCK_INFO *block, 
+    CORE_MEMORY_ALLOCATOR   *alloc
+)
+{
+    umword_t *split_index =(umword_t*)alloc->SplitIndex;
+    split_index[block->IndexWord] &= ~block->IndexMask;
 }
 
 CORE_API(void)
@@ -1127,8 +1282,8 @@ CORE_HostMemoryReserveAndCommit
     }
     if (alloc->SourcePool != NULL && alloc->SourcePool->MaxTotalCommitment != 0 && commit_size > 0)
     {   /* ensure that this request won't cause the pool limit to be exceeded */
-        size_t new_commit = alloc->SourcePool->PoolTotalCommitment + commit_size;
-        if    (new_commit > alloc->SourcePool->MaxTotalCommitment)
+        uint64_t new_commit = alloc->SourcePool->PoolTotalCommitment + commit_size;
+        if (new_commit > alloc->SourcePool->MaxTotalCommitment)
         {   SetLastError(ERROR_NOT_ENOUGH_MEMORY);
             return -1;
         }
@@ -1177,14 +1332,14 @@ CORE_HostMemoryIncreaseCommitment
     }
     if (alloc->BytesCommitted < commit_size)
     {
-        SYSTEM_INFO        sysinfo;
-        size_t max_commit_increase = alloc->BytesReserved - alloc->BytesCommitted;
-        size_t req_commit_increase = commit_size - alloc->BytesCommitted;
-        size_t old_bytes_committed = alloc->BytesCommitted;
-        size_t min_commit_increase = 0;
-        size_t new_bytes_committed = 0;
-        size_t           page_size = 0;
-        DWORD               access = 0;
+        SYSTEM_INFO          sysinfo;
+        uint64_t max_commit_increase = alloc->BytesReserved - alloc->BytesCommitted;
+        uint64_t req_commit_increase = commit_size - alloc->BytesCommitted;
+        uint64_t old_bytes_committed = alloc->BytesCommitted;
+        uint64_t min_commit_increase = 0;
+        uint64_t new_bytes_committed = 0;
+        size_t             page_size = 0;
+        DWORD                 access = 0;
 
         if (alloc->SourcePool != NULL)
         {   /* use the minimum commit increase specified on the source pool */
@@ -1228,7 +1383,7 @@ CORE_HostMemoryIncreaseCommitment
 
         /* request that an additional portion of the pre-reserved address space be committed.
          * executable allocations are entirely committed up-front, so don't worry about that. */
-        if (VirtualAlloc((uint8_t*) alloc->BaseAddress, new_bytes_committed, MEM_COMMIT, access) == NULL)
+        if (VirtualAlloc((uint8_t*) alloc->BaseAddress, (SIZE_T) new_bytes_committed, MEM_COMMIT, access) == NULL)
         {
             return -1;
         }
@@ -1253,7 +1408,7 @@ CORE_HostMemoryFlush
 {
     if (alloc->AllocationFlags & CORE_HOST_MEMORY_ALLOCATION_FLAG_EXECUTE)
     {
-        (void) FlushInstructionCache(GetCurrentProcess(), alloc->BaseAddress, alloc->BytesCommitted);
+        (void) FlushInstructionCache(GetCurrentProcess(), alloc->BaseAddress, (SIZE_T) alloc->BytesCommitted);
     }
 }
 
@@ -1268,7 +1423,7 @@ CORE_HostMemoryRelease
         VirtualFree(alloc->BaseAddress, 0, MEM_RELEASE);
         /* update the total commitment on the source pool */
         if (alloc->SourcePool != NULL)
-        {   assert(alloc->BytesCommitted < alloc->SourcePool->PoolTotalCommitment);
+        {   assert(alloc->BytesCommitted <= alloc->SourcePool->PoolTotalCommitment);
             alloc->SourcePool->PoolTotalCommitment -= alloc->BytesCommitted;
         }
     }
@@ -1361,7 +1516,7 @@ CORE_MemoryArenaAllocate
         arena->NextOffset    = new_offset;
         block->SizeInBytes   = size;
         block->BlockOffset   = arena->NextOffset + align_bytes;
-        block->HostAddress   = arena->AllocatorType == CORE_MEMORY_ALLOCATOR_TYPE_HOST ? (void*) aligned_address : NULL;
+        block->HostAddress   = arena->AllocatorType == CORE_MEMORY_ALLOCATOR_TYPE_HOST ? (void*) (uintptr_t) aligned_address : NULL;
         block->AllocatorType = arena->AllocatorType;
         return 0;
     }
@@ -1428,17 +1583,17 @@ CORE_QueryMemoryAllocatorStateSize
     size_t allocation_size_max
 )
 {   
-    unsigned long max_bit = 0;
-    unsigned long min_bit = 0;
-    size_t    level_count;
-    size_t free_list_size;
-    size_t     index_size;
-    size_t     total_size;
+    unsigned long    max_bit = 0;
+    unsigned long    min_bit = 0;
+    size_t       level_count;
+    size_t  split_index_size;
+    size_t status_index_size;
+    size_t  total_state_size;
 
     /* arguments must be powers of two greater than zero */
-    if ((allocation_size_min & (allocation_size_min-1)) != 0 || allocation_size_min < 16)
+    if ((allocation_size_min & (allocation_size_min-1)) != 0 || allocation_size_min <  16)
         return 0;
-    if ((allocation_size_max & (allocation_size_max-1)) != 0 || allocation_size_max < allocation_size_min)
+    if ((allocation_size_max & (allocation_size_max-1)) != 0 || allocation_size_max <= allocation_size_min)
         return 0;
 
     /* determine the number of levels and ensure the count doesn't exceed the limit */
@@ -1449,11 +1604,17 @@ CORE_QueryMemoryAllocatorStateSize
     _BitScanReverse  (&min_bit, allocation_size_min);
     _BitScanReverse  (&max_bit, allocation_size_max);
 #endif
-    level_count    = ((max_bit - min_bit)  + 1);
-    free_list_size = (1 << level_count)    * 4; /* 4 = sizeof(uint32_t), magic number to avoid conversion warning */
-    index_size     = (1 <<(level_count-1)) / 8; /* 8 = number of bits per-byte */
-    total_size     = (2 *  index_size) + free_list_size;
-    return total_size;
+    level_count       = ((max_bit - min_bit) + 1);
+#ifdef _M_X64
+    split_index_size  = ((1 << (level_count  - 1)) + 63) / 64; /* size in 64-bit words */
+    status_index_size = ((1 << (level_count     )) + 63) / 64; /* size in 64-bit words */
+    total_state_size  =  (split_index_size + status_index_size) * 8;
+#else
+    split_index_size  = ((1 << (level_count  - 1)) + 31) / 32; /* size in 32-bit words */
+    status_index_size = ((1 << (level_count     )) + 31) / 32; /* size in 32-bit words */
+    total_state_size  =  (split_index_size + status_index_size) * 4;
+#endif
+    return total_state_size;
 }
 
 CORE_API(int)
@@ -1463,15 +1624,18 @@ CORE_InitMemoryAllocator
     CORE_MEMORY_ALLOCATOR_INIT *init
 )
 {
-    unsigned long  max_bit = 0;
-    unsigned long  min_bit = 0;
-    size_t       level_bit;
-    size_t     level_index;
-    size_t     level_count;
-    size_t  free_list_size;
-    size_t      index_size;
-    size_t   required_size;
-    size_t  total_mem_size = init->MemorySize + init->BytesReserved;
+    unsigned long    max_bit = 0;
+    unsigned long    min_bit = 0;
+    size_t         level_bit;
+    size_t       level_index;
+    size_t       level_count;
+    size_t  split_index_size; /* in bytes */
+    size_t status_index_size; /* in bytes */
+    size_t     required_size; /* in bytes */
+    size_t    total_mem_size =(size_t  )(init->MemorySize + init->BytesReserved);
+    uint8_t      *state_data =(uint8_t*) init->StateData;
+    uint8_t     *split_index;
+    uint8_t    *status_index;
 
     /* basic parameter validation */
     if (init->AllocatorType != CORE_MEMORY_ALLOCATOR_TYPE_HOST && 
@@ -1521,6 +1685,12 @@ CORE_InitMemoryAllocator
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
+    if (init->AllocationSizeMin >= init->AllocationSizeMax)
+    {   assert(init->AllocationSizeMax > init->AllocationSizeMin);
+        ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
     if (init->BytesReserved >= init->AllocationSizeMax)
     {   assert(init->BytesReserved < init->AllocationSizeMax);
         ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
@@ -1533,50 +1703,57 @@ CORE_InitMemoryAllocator
     _BitScanReverse64(&min_bit, init->AllocationSizeMin);
     _BitScanReverse64(&max_bit, init->AllocationSizeMax);
 #else
-    _BitScanReverse  (&min_bit, init->AllocationSizeMin);
-    _BitScanReverse  (&max_bit, init->AllocationSizeMax);
+    _BitScanReverse  (&min_bit, (DWORD) init->AllocationSizeMin);
+    _BitScanReverse  (&max_bit, (DWORD) init->AllocationSizeMax);
 #endif
-    level_bit      =   max_bit;
-    level_count    = ((max_bit - min_bit)  + 1);
-    free_list_size = (1 << level_count)    * 4; /* 4 = sizeof(uint32_t), magic number to avoid conversion warning */
-    index_size     = (1 <<(level_count-1)) / 8; /* 8 = number of bits per-byte */
-    required_size  = (2 *  index_size) + free_list_size;
+    level_bit         =  max_bit;
+    level_count       =((max_bit - min_bit)+ 1);
+#ifdef _M_X64
+    split_index_size  =(((1 << (level_count  - 1)) + 63) / 64) * 8;
+    status_index_size =(((1 << (level_count     )) + 63) / 64) * 8;
+#else
+    split_index_size  =(((1 << (level_count  - 1)) + 31) / 32) * 4;
+    status_index_size =(((1 << (level_count     )) + 31) / 32) * 4;
+#endif
+    required_size     = split_index_size + status_index_size;
+    status_index      = state_data;
+    split_index       = state_data + status_index_size;
     if (init->StateDataSize < required_size)
     {   assert(init->StateDataSize >= required_size);
         ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
-    if (level_count > CORE_BUDDY_ALLOCATOR_MAX_LEVELS)
-    {   assert(level_count <= CORE_BUDDY_ALLOCATOR_MAX_LEVELS);
+    if (level_count > CORE_MEMORY_ALLOCATOR_MAX_LEVELS)
+    {   assert(level_count <= CORE_MEMORY_ALLOCATOR_MAX_LEVELS);
         ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
 
     /* set up the allocator state */
-    ZeroMemory(init->StateData, init->StateDataSize);
     ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
+    ZeroMemory(split_index , split_index_size);
+    FillMemory(status_index, status_index_size, 0xFF);
     alloc->AllocatorName     = init->AllocatorName;
     alloc->AllocatorType     = init->AllocatorType;
+    alloc->LevelCount        =(uint32_t)level_count;
     alloc->MemoryStart       = init->MemoryStart;
     alloc->MemorySize        = init->MemorySize  + init->BytesReserved;
     alloc->AllocationSizeMin = init->AllocationSizeMin;
     alloc->AllocationSizeMax = init->AllocationSizeMax;
     alloc->BytesReserved     = init->BytesReserved;
-    alloc->MetadataBase      =(uint8_t *)            init->StateData;
-    alloc->MergeIndex        =(uint32_t*)((uint8_t*) init->StateData + (index_size * 0));
-    alloc->SplitIndex        =(uint32_t*)((uint8_t*) init->StateData + (index_size * 1));
-    alloc->FreeListData      =(uint32_t*)((uint8_t*) init->StateData + (index_size * 2));
-    alloc->Reserved          = 0;
-    alloc->LevelCount        =(uint32_t)level_count;
+    alloc->SplitIndex        = split_index;
+    alloc->SplitIndexSize    = split_index_size;
+    alloc->StatusIndex       = status_index;
+    alloc->StatusIndexSize   = status_index_size;
+    alloc->StateData         = init->StateData;
+    alloc->StateDataSize     = init->StateDataSize;
     for (level_index = 0; level_index < level_count; ++level_index)
     {
         alloc->FreeCount[level_index] = 0;
         alloc->LevelBits[level_index] =(uint32_t) level_bit--;
-        alloc->FreeLists[level_index] = alloc->FreeListData + ((1 << level_index) - 1);
     }
-    CORE__BuddyAllocatorPushFreeOffset(alloc, 0, 0);
 
     /* sometimes the requirement of AllocationSizeMax being a power-of-two leads to 
      * significant memory waste, so allow the caller to specify a BytesReserved 
@@ -1587,6 +1764,7 @@ CORE_InitMemoryAllocator
            contiguous blocks will be allocated, starting from invalid high addresses
            down to init->MemoryStart+init->MemorySize. this leaves the user allocations
            to take up all of the valid address space. */
+#if 0
         uint32_t  level_size = 1 << min_bit;
         uint32_t block_count =(uint32_t)((init->BytesReserved + (level_size-1)) / level_size);
         uint32_t block_index;
@@ -1597,14 +1775,16 @@ CORE_InitMemoryAllocator
             assert((uint64_t) b.HostAddress >= (init->MemoryStart+init->MemorySize));
             assert(b.BlockOffset >= init->MemorySize);
         }
+#endif
     }
     if (init->UserData != NULL && init->UserDataSize > 0)
     {
-        CopyMemory(alloc->UserData, init->UserData, init->UserDataSize);
+        CopyMemory(alloc->UserData, init->UserData, (SIZE_T) init->UserDataSize);
     }
     return 0;
 }
 
+#if 0
 CORE_API(int)
 CORE_MemoryAllocate
 (
@@ -1620,10 +1800,7 @@ CORE_MemoryAllocate
     uint32_t  parent_offset;
     uint32_t  return_offset;
     unsigned long bit_index;
-    CORE__BUDDY_BLOCK_INFO      parent_info;
-    CORE__BUDDY_BLOCK_INFO       block_info;
-    CORE__BUDDY_BLOCK_MERGE_INFO merge_info;
-    CORE__BUDDY_BLOCK_SPLIT_INFO split_info;
+    CORE__MEMORY_BLOCK_INFO block_info;
 
     if (size < alignment)
     {   /* round up to the requested alignment */
@@ -1906,65 +2083,87 @@ CORE_MemoryFree
     CORE_MEMORY_ALLOCATOR *alloc, 
     CORE_MEMORY_BLOCK  *existing
 )
-{
-    if (existing->SizeInBytes >= alloc->AllocationSizeMin)
+{   /* in the merge index:
+     * - the bit is 0 if both the block and its buddy are allocated, or both are free.
+     * - the bit is 1 if one of the blocks is allocated and the other is free.
+     * - there is no entry for level 0, because the level 0 block has no buddy.
+     *
+     * in the split index:
+     * - the bit i is 0 if the block with absolute index i has not been split.
+     * - the bit i is 1 if the block with absolute index i has been split.
+     * - there are no entries for the blocks at level alloc->LevelCount-1 because these cannot be split.
+     *
+     * initialize block_offset = (uint32_t) existing->BlockOffset;
+     * initialize level_index  =  alloc->LevelBits[0] - bit_index;
+     *
+     * while (level_idx > 0) {
+     *   get information about the block at offset block_offset and level level_index.
+     *   toggle the status bit in the merge index to mark the block as being free.
+     *   if the status bit is now 0 (ie. was 1), then the block and its buddy can be merged:
+     *   - remove the buddy block from the free list.
+     *   - clear the status bit in the split index for the parent block.
+     *   - update the block offset to point to the merged block.
+     *   - decrement the level index.
+     *   else, no merge can be performed because the buddy block is not free, so break.
+     * }
+     * return the block at block_offset to the free list for level_index. */
+    uint32_t                   *merge_index;
+    uint32_t                   *split_index;
+    uint32_t                   **free_lists;
+    uint32_t                    *free_count;
+    uint32_t                    *level_free;
+    uint32_t                     prev_state;
+    uint32_t                           i, n;
+    uint32_t                      pow2_size;
+    unsigned long                 bit_index;
+    uint32_t                    level_index;
+    uint32_t                   block_offset;
+    uint32_t                   buddy_offset;
+    CORE__BUDDY_BLOCK_INFO      parent_info;
+    CORE__BUDDY_BLOCK_INFO       block_info;
+    CORE__BUDDY_BLOCK_MERGE_INFO merge_info;
+    CORE__BUDDY_BLOCK_SPLIT_INFO split_info;
+
+    merge_index  =  alloc->MergeIndex;
+    split_index  =  alloc->SplitIndex;
+    free_lists   =  alloc->FreeLists;
+    free_count   =  alloc->FreeCount;
+
+    pow2_size    = (uint32_t) CORE__MemoryNextPow2GreaterOrEqual(existing->SizeInBytes);
+    block_offset = (uint32_t) existing->BlockOffset;
+    _BitScanReverse(&bit_index, pow2_size);
+    level_index  = (alloc->LevelBits[0] - bit_index);
+
+    while (level_index > 0)
     {
-        uint32_t                           i, n;
-        uint32_t                     offset_u32 = (uint32_t) existing->BlockOffset;
-        uint32_t                      pow2_size = (uint32_t) CORE__MemoryNextPow2GreaterOrEqual(existing->SizeInBytes); /* a level 0 allocation may not have a power-of-two size */
-        uint32_t                      level_idx =  0;
-        unsigned long                 bit_index =  0;
-        uint32_t                   merge_offset;
-        uint32_t                   buddy_offset;
-        uint32_t                   *free_offset;
-        CORE__BUDDY_BLOCK_INFO       block_info;
-        CORE__BUDDY_BLOCK_MERGE_INFO merge_info;
-        CORE__BUDDY_BLOCK_SPLIT_INFO split_info;
-
-        /* convert the size into a level index */
-        _BitScanReverse(&bit_index, pow2_size);
-        level_idx = alloc->LevelBits[0] - bit_index;
-
-        /* mark the block as free in the merge index */
-        CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&block_info, alloc, offset_u32, level_idx);
+        CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&block_info, alloc, block_offset, level_index);
         merge_info  = CORE__BuddyAllocatorMergeIndexInfo(&block_info);
-        alloc->MergeIndex[merge_info.WordIndex] ^= merge_info.Mask;
-        do
-        {   /* if the new state is 0, the block and its buddy can be merged.
-               if the new state is 1, only the block is free and we're done. */
-            if ((block_info.LevelIndex == 0) || ((alloc->MergeIndex[merge_info.WordIndex] & merge_info.Mask) != 0))
-            {   /* no additional merging can be performed */
-                break;
-            }
-
-            /* perform a merge operation between the buddy pair.
-             * remove the buddy block from the free list.
-             * the merged block is the lowest offset of the pair. */
-            merge_offset  =(block_info.LeftAbsoluteIndex  - block_info.IndexOffset) * block_info.BlockSize;
+        prev_state  = merge_index[merge_info.WordIndex] & merge_info.Mask;
+        if (prev_state)
+        {
+            level_index   = level_index - 1;
+            block_offset  =(block_info.LeftAbsoluteIndex  - block_info.IndexOffset) * block_info.BlockSize;
             buddy_offset  =(block_info.BuddyAbsoluteIndex - block_info.IndexOffset) * block_info.BlockSize;
-            free_offset   = alloc->FreeLists[block_info.LevelIndex];
-            for (i = 0, n = alloc->FreeCount[block_info.LevelIndex]; i < n; ++i)
+            level_free    = free_lists[block_info.LevelIndex];
+            for (i = 0, n = free_count[block_info.LevelIndex]; i < n; ++i)
             {
-                if (free_offset[i] == buddy_offset)
-                {   /* found the matching offset. swap the last item into its place */
-                    alloc->FreeCount[block_info.LevelIndex] = n-1;
-                    free_offset[i] = free_offset[n-1];
+                if (level_free[i] == buddy_offset)
+                {
+                    free_count[block_info.LevelIndex] = n-1;
+                    level_free[i] = level_free[n-1];
                     break;
                 }
             }
-
-            /* clear the split status for the parent block */
-            CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&block_info, alloc, merge_offset, block_info.LevelIndex-1);
-            merge_info  = CORE__BuddyAllocatorMergeIndexInfo(&block_info);
-            split_info  = CORE__BuddyAllocatorSplitIndexInfo(&block_info);
-            alloc->SplitIndex[split_info.WordIndex] &= ~split_info.Mask;
-
-            /* continue trying to merge into larger blocks */
-            offset_u32 = merge_offset;
-        } while (block_info.LevelIndex != 0);
-        /* return the possibly merged block back to the free list for the level it was allocated from */
-        CORE__BuddyAllocatorPushFreeOffset(alloc, offset_u32, block_info.LevelIndex);
+            CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&parent_info, alloc, block_offset, level_index);
+            split_info  = CORE__BuddyAllocatorSplitIndexInfo(&parent_info);
+            split_index[split_info.WordIndex] &= ~split_info.Mask;
+        }
+        else break;
     }
+    CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&block_info, alloc, block_offset, level_index);
+    merge_info  = CORE__BuddyAllocatorMergeIndexInfo(&block_info);
+    merge_index[merge_info.WordIndex] ^= merge_info.Mask;
+    CORE__BuddyAllocatorPushFreeOffset(alloc, block_offset, level_index);
 }
 
 CORE_API(void)
@@ -1997,6 +2196,7 @@ CORE_MemoryAllocatorReset
         }
     }
 }
+#endif
 
 #endif /* CORE_MEMORY_IMPLEMENTATION */
 
