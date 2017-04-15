@@ -3,7 +3,7 @@
  *
  * This software is dual-licensed to the public domain and under the following 
  * license: You are hereby granted a perpetual, irrevocable license to copy, 
- * modify, publish and distribute this file as you see fit,
+ * modify, publish and distribute this file as you see fit.
  *
  */
 #ifndef __CORE_MEMORY_H__
@@ -25,6 +25,15 @@
 /* Define the maximum number of opaque "user data" bytes that can be stored with a memory arena or memory allocator. */
 #ifndef CORE_MEMORY_ALLOCATOR_MAX_USER
 #define CORE_MEMORY_ALLOCATOR_MAX_USER    64
+#endif
+
+/* @summary Determine whether a given value is a power of two or not.
+ * @param _value The value to check.
+ * @return One if the value is a power-of-two, or zero otherwise.
+ */
+#ifndef CORE_IsPowerOfTwo
+#define CORE_IsPowerOfTwo(_value)                                              \
+    ((((_value) & ((_value)-1)) == 0) ? 1 : 0)
 #endif
 
 /* @summary Retrieve the alignment of a particular type, in bytes.
@@ -692,6 +701,11 @@ CORE_MemoryAllocatorReset
     #define CORE_MEMORY_WORDSIZE_ONE                1ULL
     #endif
 
+    /* @summary Define the constant representing the maximum value that can be stored in a machine word. */
+    #ifndef CORE_MEMORY_WORDSIZE_MAX
+    #define CORE_MEMORY_WORDSIZE_MAX                (~CORE_MEMORY_WORDSIZE_ZERO)
+    #endif
+
     /* @summary Define the intrinsic used to locate the first set bit in a machine word, starting from the LSB. */
     #ifndef CORE_BitScanForward
     #define CORE_BitScanForward(_value, _setbit)    _BitScanForward64((_value), (_setbit))
@@ -735,6 +749,11 @@ CORE_MemoryAllocatorReset
     #define CORE_MEMORY_WORDSIZE_ONE                1UL
     #endif
 
+    /* @summary Define the constant representing the maximum value that can be stored in a machine word. */
+    #ifndef CORE_MEMORY_WORDSIZE_MAX
+    #define CORE_MEMORY_WORDSIZE_MAX                (~CORE_MEMORY_WORDSIZE_ZERO)
+    #endif
+
     /* @summary Define the intrinsic used to locate the first set bit in a machine word, starting from the LSB. */
     #ifndef CORE_BitScanForward
     #define CORE_BitScanForward(_value, _setbit)    _BitScanForward((_value), (_setbit))
@@ -754,6 +773,9 @@ typedef struct _CORE__MEMORY_INDEX_SIZE {
     uint64_t SplitIndexSize;      /* The size of the split index data, in bytes. This value is always an even multiple of the machine word size. */
     uint64_t StatusIndexSize;     /* The size of the status index data, in bytes. This value is always an even multiple of the machine word size. */
     uint64_t TotalIndexSize;      /* The total required size for all index data, in bytes. This value is always an even multiple of the machine word size. */
+    uint32_t MinBitIndex;         /* The zero-based index of the set bit corresponding to the minimum allocation size. */
+    uint32_t MaxBitIndex;         /* The zero-based index of the set bit corresponding to the maximum allocation size. */
+    uint32_t LevelCount;          /* The number of powers of two between the minimum and maximum allocation size. */
 } CORE__MEMORY_INDEX_SIZE;
 
 /* @summary Define the data returned from a memory allocator block query. */
@@ -786,6 +808,39 @@ CORE__MemoryNextPow2GreaterOrEqual
         n |= n >> i;
     }
     return n+1;
+}
+
+/* @summary Compute the number of levels and size of the state data required for a memory allocator with a given configuration.
+ * @param info The CORE__MEMORY_INDEX_INFO to populate.
+ * @param allocation_size_min The minimum allocation size, in bytes. This must be a power-of-two, greater than zero.
+ * @param allocation_size_max The maximum allocation size, in bytes. This must be a power-of-two, greater than the minimum allocation size.
+ */
+static void
+CORE__QueryMemoryIndexSize
+(
+    CORE__MEMORY_INDEX_SIZE *info, 
+    size_t    allocation_size_min, 
+    size_t    allocation_size_max
+)
+{
+    unsigned long      max_bit = 0;
+    unsigned long      min_bit = 0;
+    uint32_t       level_count;
+    uint64_t  split_index_size; /* in machine words */
+    uint64_t status_index_size; /* in machine words */
+
+    /* determine the number of levels */
+    CORE_BitScanReverse(&min_bit, (umword_t) allocation_size_min);
+    CORE_BitScanReverse(&max_bit, (umword_t) allocation_size_max);
+    level_count       =((max_bit - min_bit)  + 1);
+    split_index_size  =((CORE_MEMORY_WORDSIZE_ONE << (level_count-1)) + CORE_MEMORY_WORDSIZE_MASK) >> CORE_MEMORY_WORDSIZE_SHIFT;
+    status_index_size =((CORE_MEMORY_WORDSIZE_ONE << (level_count  )) + CORE_MEMORY_WORDSIZE_MASK) >> CORE_MEMORY_WORDSIZE_SHIFT;
+    info->SplitIndexSize  = split_index_size  * CORE_MEMORY_WORDSIZE_BYTES;
+    info->StatusIndexSize = status_index_size * CORE_MEMORY_WORDSIZE_BYTES;
+    info->TotalIndexSize  =(status_index_size + split_index_size) * CORE_MEMORY_WORDSIZE_BYTES;
+    info->MinBitIndex     = min_bit;
+    info->MaxBitIndex     = max_bit;
+    info->LevelCount      = level_count;
 }
 
 /* @summary Query a memory allocator for attributes of an allocated block where the block level is known.
