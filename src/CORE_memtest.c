@@ -114,6 +114,9 @@ DumpStatusIndex
     uint32_t          bit_index = 0;
     uint8_t                bits = *status_bits;
 
+    (void) index_size;
+    (void) global_block_count;
+
     ConsoleOutput("Status Index (%02u levels): ", level_count);
     while (level_index < level_count)
     {   assert(global_block_index < global_block_count);
