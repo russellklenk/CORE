@@ -145,6 +145,57 @@ DumpStatusIndex
     ConsoleOutput("\n");
 }
 
+static void
+DumpSplitIndex
+(
+    uint32_t level_count,  /* the number of levels in the allocator */
+    void    *split_index,  /* the raw split index data */
+    uint64_t  index_size   /* in bytes */
+)
+{   assert(level_count  > 0);
+    assert(index_size   > 0);
+    assert(split_index != NULL);
+
+    uint8_t         *split_bits =(uint8_t*) split_index;
+    uint32_t global_block_index = 0;
+    uint32_t global_block_count = 1UL << (level_count - 1); /* no split index data for last level */
+    uint32_t  level_block_count = 0;
+    uint32_t  level_block_index = 0;
+    uint32_t        level_index = 0;
+    uint32_t          bit_index = 0;
+    uint8_t                bits = *split_bits;
+
+    (void) index_size;
+    (void) global_block_count;
+
+    ConsoleOutput("Split Index  (%02u levels): ", (level_count-1));
+    while (level_index < (level_count-1))
+    {   assert(global_block_index < global_block_count);
+        level_block_count  = 1UL << level_index;
+        level_block_index  = 0;
+        while (level_block_index  < level_block_count)
+        {
+            if (bits & (1 << bit_index++))
+                ConsoleOutput("1");
+            else
+                ConsoleOutput("0");
+            
+            if (bit_index == 8)
+            {
+                bit_index = 0;
+                split_bits++;
+                bits = *split_bits;
+            }
+            global_block_index++;
+            level_block_index++;
+        }
+        if ((level_index + 1) != level_count)
+            ConsoleOutput(" | ");
+        level_index++;
+    }
+    ConsoleOutput("\n");
+}
+
 #if 0
 static void
 DumpMergeIndex
@@ -419,7 +470,9 @@ main
         global_level_index++;
     }
 
-#if 0
+    /* re-initialize the memory allocator state since we mucked with it above */
+    CORE_InitMemoryAllocator(&host_alloc, &host_alloc_init);
+
     /* allocate as many 16KB blocks as will fit in the 14MB we have available */
     ConsoleOutput("ALLOCATIONS\n");
     //max_blocks = Megabytes(14) / Kilobytes(16);
@@ -431,8 +484,9 @@ main
         assert((uint64_t) b.HostAddress >= host_alloc_init.MemoryStart);
         assert(b.BlockOffset >= 0);
         assert(b.BlockOffset < (host_alloc_init.MemoryStart + host_alloc_init.MemorySize));
-        DumpBlock(&b);
-        DumpAllocatorState(&host_alloc);
+        //DumpBlock(&b);
+        DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
+        DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
     }
     /* the next allocation attempt had better fail */
     res = CORE_MemoryAllocate(&host_alloc, Kilobytes(16), CORE_AlignOf(uint32_t), &b);
@@ -446,8 +500,9 @@ main
         b.HostAddress   = (void*)(host_alloc_init.MemoryStart + b.BlockOffset);
         b.AllocatorType =  CORE_MEMORY_ALLOCATOR_TYPE_HOST;
         CORE_MemoryFree(&host_alloc, &b);
-        DumpBlock(&b);
-        DumpAllocatorState(&host_alloc);
+        //DumpBlock(&b);
+        DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
+        DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
     }
     /* a 16MB allocation should fail, because we only really have 14MB */
     //res = CORE_MemoryAllocate(&host_alloc, Megabytes(16), CORE_AlignOf(uint32_t), &b);
@@ -459,7 +514,6 @@ main
     //assert(b.BlockOffset == 0);
 
     /* ... */
-#endif
 
     /* cleanup. generally you can just call CORE_DeleteHostMemoryPool, but this is test code. */
     CORE_HostMemoryRelease(host_mem);
