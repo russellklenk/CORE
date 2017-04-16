@@ -2004,106 +2004,48 @@ CORE_MemoryFree
     umword_t            pow2_size = (umword_t ) CORE__MemoryNextPow2GreaterOrEqual((size_t) existing->SizeInBytes);
     unsigned long       bit_index;
     uint32_t          level_index;
+    uint32_t          block_index;
+    uint32_t          buddy_index;
+    uint32_t     block_index_word;
+    umword_t     block_index_mask;
+    uint32_t     buddy_index_word;
+    umword_t     buddy_index_mask;
     CORE__MEMORY_BLOCK_INFO block;
 
     CORE_BitScanReverse(&bit_index, pow2_size);
     level_index = alloc->LevelBits[0] - bit_index;
     CORE__QueryMemoryBlockInfoWithKnownLevel(&block, alloc, existing->BlockOffset, level_index);
+    block_index        = block.BlockAbsoluteIndex;
+    block_index_word   = block.IndexWord;
+    block_index_mask   = block.IndexMask;
 
-    for ( ; ; )
-    {   /* we have the address of this block and its buddy, merge up */
-        /* stop when the status bit for the buddy block is 0 */
-        /* parent block is LeftAbsoluteIndex / 2; LeftAbsoluteIndex is always odd */
-    }
-}
-
-CORE_API(void)
-CORE_MemoryFree
-(
-    CORE_MEMORY_ALLOCATOR *alloc, 
-    CORE_MEMORY_BLOCK  *existing
-)
-{   /* in the merge index:
-     * - the bit is 0 if both the block and its buddy are allocated, or both are free.
-     * - the bit is 1 if one of the blocks is allocated and the other is free.
-     * - there is no entry for level 0, because the level 0 block has no buddy.
-     *
-     * in the split index:
-     * - the bit i is 0 if the block with absolute index i has not been split.
-     * - the bit i is 1 if the block with absolute index i has been split.
-     * - there are no entries for the blocks at level alloc->LevelCount-1 because these cannot be split.
-     *
-     * initialize block_offset = (uint32_t) existing->BlockOffset;
-     * initialize level_index  =  alloc->LevelBits[0] - bit_index;
-     *
-     * while (level_idx > 0) {
-     *   get information about the block at offset block_offset and level level_index.
-     *   toggle the status bit in the merge index to mark the block as being free.
-     *   if the status bit is now 0 (ie. was 1), then the block and its buddy can be merged:
-     *   - remove the buddy block from the free list.
-     *   - clear the status bit in the split index for the parent block.
-     *   - update the block offset to point to the merged block.
-     *   - decrement the level index.
-     *   else, no merge can be performed because the buddy block is not free, so break.
-     * }
-     * return the block at block_offset to the free list for level_index. */
-    uint32_t                   *merge_index;
-    uint32_t                   *split_index;
-    uint32_t                   **free_lists;
-    uint32_t                    *free_count;
-    uint32_t                    *level_free;
-    uint32_t                     prev_state;
-    uint32_t                           i, n;
-    uint32_t                      pow2_size;
-    unsigned long                 bit_index;
-    uint32_t                    level_index;
-    uint32_t                   block_offset;
-    uint32_t                   buddy_offset;
-    CORE__BUDDY_BLOCK_INFO      parent_info;
-    CORE__BUDDY_BLOCK_INFO       block_info;
-    CORE__BUDDY_BLOCK_MERGE_INFO merge_info;
-    CORE__BUDDY_BLOCK_SPLIT_INFO split_info;
-
-    merge_index  =  alloc->MergeIndex;
-    split_index  =  alloc->SplitIndex;
-    free_lists   =  alloc->FreeLists;
-    free_count   =  alloc->FreeCount;
-
-    pow2_size    = (uint32_t) CORE__MemoryNextPow2GreaterOrEqual(existing->SizeInBytes);
-    block_offset = (uint32_t) existing->BlockOffset;
-    _BitScanReverse(&bit_index, pow2_size);
-    level_index  = (alloc->LevelBits[0] - bit_index);
-
+    /* merge the free block with its buddy block if the buddy block is free */
     while (level_index > 0)
-    {
-        CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&block_info, alloc, block_offset, level_index);
-        merge_info  = CORE__BuddyAllocatorMergeIndexInfo(&block_info);
-        prev_state  = merge_index[merge_info.WordIndex] & merge_info.Mask;
-        if (prev_state)
-        {
-            level_index   = level_index - 1;
-            block_offset  =(block_info.LeftAbsoluteIndex  - block_info.IndexOffset) * block_info.BlockSize;
-            buddy_offset  =(block_info.BuddyAbsoluteIndex - block_info.IndexOffset) * block_info.BlockSize;
-            level_free    = free_lists[block_info.LevelIndex];
-            for (i = 0, n = free_count[block_info.LevelIndex]; i < n; ++i)
-            {
-                if (level_free[i] == buddy_offset)
-                {
-                    free_count[block_info.LevelIndex] = n-1;
-                    level_free[i] = level_free[n-1];
-                    break;
-                }
-            }
-            CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&parent_info, alloc, block_offset, level_index);
-            split_info  = CORE__BuddyAllocatorSplitIndexInfo(&parent_info);
-            split_index[split_info.WordIndex] &= ~split_info.Mask;
+    {   /* determine the absolute index of the buddy block */
+        buddy_index      =(block_index & 1) ? (block_index + 1) : (block_index - 1);
+        buddy_index_mask = CORE_MEMORY_WORDSIZE_ONE << (buddy_index & CORE_MEMORY_WORDSIZE_MASK);
+        buddy_index_word = buddy_index >> CORE_MEMORY_WORDSIZE_SHIFT;
+        /* check the status bit for the buddy block */
+        if ((status_index[buddy_index_word] & buddy_index_mask) == 0)
+        {   /* the buddy block is not available - block and buddy cannot be merged */
+            break;
         }
-        else break;
+        /* the block and its buddy can be merged into a larger parent block.
+         * mark the buddy block as not available, and update buddy to reference the parent.
+         */
+        status_index[buddy_index_word] &=~buddy_index_mask;
+        block_index      =(block_index - 1) / 2;
+        block_index_mask = CORE_MEMORY_WORDSIZE_ONE << (block_index & CORE_MEMORY_WORDSIZE_MASK);
+        block_index_word = block_index >> CORE_MEMORY_WORDSIZE_SHIFT;
+        /* clear the split status on the parent block */
+        split_index[block_index_word] &= ~block_index_mask;
+        /* attempt to merge at the next-larger level */
+        level_index--;
     }
-    CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&block_info, alloc, block_offset, level_index);
-    merge_info  = CORE__BuddyAllocatorMergeIndexInfo(&block_info);
-    merge_index[merge_info.WordIndex] ^= merge_info.Mask;
-    CORE__BuddyAllocatorPushFreeOffset(alloc, block_offset, level_index);
+
+    /* mark the block as being free */
+    status_index[block_index_word] |= block_index_mask;
+    alloc->FreeCount[level_index]++;
 }
 
 #if 0
