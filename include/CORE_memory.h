@@ -1016,6 +1016,22 @@ CORE__MarkMemoryBlockUsed
     status_index[block->IndexWord] &= ~block->IndexMask;
 }
 
+/* @summary Update the status index to mark a memory block as used.
+ * @param alloc The CORE_MEMORY_ALLOCATOR managing the block.
+ * @param abs_block_index The absolute block index of the block to mark as used.
+ */
+static void
+CORE__MarkMemoryBlockUsedAbsolute
+(
+    CORE_MEMORY_ALLOCATOR *alloc,
+    uint32_t     abs_block_index
+)
+{
+    umword_t *status_index =(umword_t*)alloc->StatusIndex;
+    umword_t    index_mask = CORE_MEMORY_WORDSIZE_ONE << (abs_block_index & CORE_MEMORY_WORDSIZE_MASK);
+    status_index[abs_block_index >> CORE_MEMORY_WORDSIZE_SHIFT] &= ~index_mask;
+}
+
 /* @summary Update the status index to mark a memory block as free.
  * @param block Information about the memory block to mark as free.
  * @param alloc The CORE_MEMORY_ALLOCATOR managing the block.
@@ -1029,6 +1045,22 @@ CORE__MarkMemoryBlockFree
 {
     umword_t *status_index =(umword_t*)alloc->StatusIndex;
     status_index[block->IndexWord] |=  block->IndexMask;
+}
+
+/* @summary Update the status index to mark a memory block as free.
+ * @param alloc The CORE_MEMORY_ALLOCATOR managing the block.
+ * @param abs_block_index The absolute block index of the block to mark as free.
+ */
+static void
+CORE__MarkMemoryBlockFreeAbsolute
+(
+    CORE_MEMORY_ALLOCATOR *alloc,
+    uint32_t     abs_block_index
+)
+{
+    umword_t *status_index =(umword_t*)alloc->StatusIndex;
+    umword_t    index_mask = CORE_MEMORY_WORDSIZE_ONE << (abs_block_index & CORE_MEMORY_WORDSIZE_MASK);
+    status_index[abs_block_index >> CORE_MEMORY_WORDSIZE_SHIFT] |=  index_mask;
 }
 
 /* @summary Update the split index to mark a memory block as having been split.
@@ -1637,39 +1669,17 @@ CORE_QueryMemoryAllocatorStateSize
     size_t allocation_size_min, 
     size_t allocation_size_max
 )
-{   
-    unsigned long    max_bit = 0;
-    unsigned long    min_bit = 0;
-    size_t       level_count;
-    size_t  split_index_size;
-    size_t status_index_size;
-    size_t  total_state_size;
+{
+    CORE__MEMORY_INDEX_SIZE info;
 
     /* arguments must be powers of two greater than zero */
-    if ((allocation_size_min & (allocation_size_min-1)) != 0 || allocation_size_min <  16)
+    if (!CORE_IsPowerOfTwo(allocation_size_min) || allocation_size_min == 0)
         return 0;
-    if ((allocation_size_max & (allocation_size_max-1)) != 0 || allocation_size_max <= allocation_size_min)
+    if (!CORE_IsPowerOfTwo(allocation_size_max) || allocation_size_max <= allocation_size_min)
         return 0;
 
-    /* determine the number of levels and ensure the count doesn't exceed the limit */
-#ifdef _M_X64
-    _BitScanReverse64(&min_bit, allocation_size_min);
-    _BitScanReverse64(&max_bit, allocation_size_max);
-#else
-    _BitScanReverse  (&min_bit, allocation_size_min);
-    _BitScanReverse  (&max_bit, allocation_size_max);
-#endif
-    level_count       = ((max_bit - min_bit) + 1);
-#ifdef _M_X64
-    split_index_size  = ((1 << (level_count  - 1)) + 63) / 64; /* size in 64-bit words */
-    status_index_size = ((1 << (level_count     )) + 63) / 64; /* size in 64-bit words */
-    total_state_size  =  (split_index_size + status_index_size) * 8;
-#else
-    split_index_size  = ((1 << (level_count  - 1)) + 31) / 32; /* size in 32-bit words */
-    status_index_size = ((1 << (level_count     )) + 31) / 32; /* size in 32-bit words */
-    total_state_size  =  (split_index_size + status_index_size) * 4;
-#endif
-    return total_state_size;
+    CORE__QueryMemoryIndexSize(&info, allocation_size_min, allocation_size_max);
+    return (size_t) info.TotalIndexSize;
 }
 
 CORE_API(int)
@@ -1679,18 +1689,14 @@ CORE_InitMemoryAllocator
     CORE_MEMORY_ALLOCATOR_INIT *init
 )
 {
-    unsigned long    max_bit = 0;
-    unsigned long    min_bit = 0;
-    size_t         level_bit;
-    size_t       level_index;
-    size_t       level_count;
-    size_t  split_index_size; /* in bytes */
-    size_t status_index_size; /* in bytes */
-    size_t     required_size; /* in bytes */
-    size_t    total_mem_size =(size_t  )(init->MemorySize + init->BytesReserved);
-    uint8_t      *state_data =(uint8_t*) init->StateData;
-    uint8_t     *split_index;
-    uint8_t    *status_index;
+    size_t              total_mem_size =(size_t  )(init->MemorySize + init->BytesReserved);
+    uint8_t                *state_data =(uint8_t*) init->StateData;
+    uint8_t               *split_index;
+    uint8_t              *status_index;
+    size_t                   level_bit;
+    size_t                 level_index;
+    size_t                 level_count;
+    CORE__MEMORY_INDEX_SIZE index_size;
 
     /* basic parameter validation */
     if (init->AllocatorType != CORE_MEMORY_ALLOCATOR_TYPE_HOST && 
@@ -1706,8 +1712,8 @@ CORE_InitMemoryAllocator
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
-    if ((total_mem_size & (total_mem_size-1)) != 0)
-    {   assert((total_mem_size & (total_mem_size-1)) == 0 && "init->MemorySize+init->BytesReserved must be a power-of-two");
+    if (!CORE_IsPowerOfTwo(total_mem_size) || total_mem_size == 0)
+    {   assert(CORE_IsPowerOfTwo(total_mem_size) && "init->MemorySize+init->BytesReserved must be a power-of-two");
         ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
@@ -1726,22 +1732,16 @@ CORE_InitMemoryAllocator
         return -1;
     }
     /* arguments must be powers of two greater than zero */
-    if ((init->AllocationSizeMin & (init->AllocationSizeMin-1)) != 0 || init->AllocationSizeMin < 16)
-    {   assert((init->AllocationSizeMin & (init->AllocationSizeMin-1)) == 0 && "AllocationSizeMin must be a power-of-two");
+    if (!CORE_IsPowerOfTwo(init->AllocationSizeMin) || init->AllocationSizeMin < 16)
+    {   assert(CORE_IsPowerOfTwo(init->AllocationSizeMin) && "AllocationSizeMin must be a power-of-two");
         assert(init->AllocationSizeMin >= 16);
         ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
-    if ((init->AllocationSizeMax & (init->AllocationSizeMax-1)) != 0 || init->AllocationSizeMax < init->AllocationSizeMin)
-    {   assert((init->AllocationSizeMax & (init->AllocationSizeMax-1)) == 0 && "AllocationSizeMax must be a power-of-two");
+    if (!CORE_IsPowerOfTwo(init->AllocationSizeMax) || init->AllocationSizeMax < init->AllocationSizeMin)
+    {   assert(CORE_IsPowerOfTwo(init->AllocationSizeMax) && "AllocationSizeMax must be a power-of-two");
         assert(init->AllocationSizeMin < init->AllocationSizeMax);
-        ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
-        SetLastError(ERROR_INVALID_PARAMETER);
-        return -1;
-    }
-    if (init->AllocationSizeMin >= init->AllocationSizeMax)
-    {   assert(init->AllocationSizeMax > init->AllocationSizeMin);
         ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
@@ -1754,27 +1754,13 @@ CORE_InitMemoryAllocator
     }
 
     /* determine the number of levels and ensure the count doesn't exceed the limit */
-#ifdef _M_X64
-    _BitScanReverse64(&min_bit, init->AllocationSizeMin);
-    _BitScanReverse64(&max_bit, init->AllocationSizeMax);
-#else
-    _BitScanReverse  (&min_bit, (DWORD) init->AllocationSizeMin);
-    _BitScanReverse  (&max_bit, (DWORD) init->AllocationSizeMax);
-#endif
-    level_bit         =  max_bit;
-    level_count       =((max_bit - min_bit)+ 1);
-#ifdef _M_X64
-    split_index_size  =(((1 << (level_count  - 1)) + 63) / 64) * 8;
-    status_index_size =(((1 << (level_count     )) + 63) / 64) * 8;
-#else
-    split_index_size  =(((1 << (level_count  - 1)) + 31) / 32) * 4;
-    status_index_size =(((1 << (level_count     )) + 31) / 32) * 4;
-#endif
-    required_size     = split_index_size + status_index_size;
-    status_index      = state_data;
-    split_index       = state_data + status_index_size;
-    if (init->StateDataSize < required_size)
-    {   assert(init->StateDataSize >= required_size);
+    CORE__QueryMemoryIndexSize(&index_size, init->AllocationSizeMin, init->AllocationSizeMax);
+    level_bit    = index_size.MaxBitIndex;
+    level_count  = index_size.LevelCount;
+    split_index  = state_data + index_size.StatusIndexSize;
+    status_index = state_data;
+    if (init->StateDataSize < index_size.TotalIndexSize)
+    {   assert(init->StateDataSize >= index_size.TotalIndexSize);
         ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
@@ -1788,8 +1774,8 @@ CORE_InitMemoryAllocator
 
     /* set up the allocator state */
     ZeroMemory(alloc, sizeof(CORE_MEMORY_ALLOCATOR));
-    ZeroMemory(split_index , split_index_size);
-    FillMemory(status_index, status_index_size, 0xFF);
+    ZeroMemory(status_index,(size_t) index_size.StatusIndexSize);
+    ZeroMemory(split_index ,(size_t) index_size.SplitIndexSize);
     alloc->AllocatorName     = init->AllocatorName;
     alloc->AllocatorType     = init->AllocatorType;
     alloc->LevelCount        =(uint32_t)level_count;
@@ -1799,9 +1785,9 @@ CORE_InitMemoryAllocator
     alloc->AllocationSizeMax = init->AllocationSizeMax;
     alloc->BytesReserved     = init->BytesReserved;
     alloc->SplitIndex        = split_index;
-    alloc->SplitIndexSize    = split_index_size;
+    alloc->SplitIndexSize    = index_size.SplitIndexSize;
     alloc->StatusIndex       = status_index;
-    alloc->StatusIndexSize   = status_index_size;
+    alloc->StatusIndexSize   = index_size.StatusIndexSize;
     alloc->StateData         = init->StateData;
     alloc->StateDataSize     = init->StateDataSize;
     for (level_index = 0; level_index < level_count; ++level_index)
@@ -1809,18 +1795,16 @@ CORE_InitMemoryAllocator
         alloc->FreeCount[level_index] = 0;
         alloc->LevelBits[level_index] =(uint32_t) level_bit--;
     }
+    /* mark the level-0 block as being free */
+    CORE__MarkMemoryBlockFreeAbsolute(alloc, 0);
+    alloc->FreeCount[0] = 1;
 
     /* sometimes the requirement of AllocationSizeMax being a power-of-two leads to 
      * significant memory waste, so allow the caller to specify a BytesReserved 
      * value to mark a portion of memory as unusable and make use of non-pow2 memory chunks. */
     if (init->BytesReserved > 0)
-    {   /* allocate small blocks until BytesReserved is met. 
-           allocating the smallest block size ensures the least amount of waste.
-           contiguous blocks will be allocated, starting from invalid high addresses
-           down to init->MemoryStart+init->MemorySize. this leaves the user allocations
-           to take up all of the valid address space. */
-#if 0
-        uint32_t  level_size = 1 << min_bit;
+    {   /* allocate small blocks until BytesReserved is met - this ensures the least amount of waste */
+        /*uint32_t  level_size = 1 << min_bit;
         uint32_t block_count =(uint32_t)((init->BytesReserved + (level_size-1)) / level_size);
         uint32_t block_index;
         CORE_MEMORY_BLOCK  b;
@@ -1829,8 +1813,7 @@ CORE_InitMemoryAllocator
             (void) CORE_MemoryAllocate(alloc, level_size, level_size, &b);
             assert((uint64_t) b.HostAddress >= (init->MemoryStart+init->MemorySize));
             assert(b.BlockOffset >= init->MemorySize);
-        }
-#endif
+        }*/
     }
     if (init->UserData != NULL && init->UserDataSize > 0)
     {
@@ -1839,7 +1822,40 @@ CORE_InitMemoryAllocator
     return 0;
 }
 
-#if 0
+CORE_API(void)
+CORE_MemoryAllocatorReset
+(
+    CORE_MEMORY_ALLOCATOR *alloc
+)
+{   /* return the merge and split indexes to their initial state.
+     * zero out all of the free list entries.
+     * return level 0 block 0 to the free list. */
+    ZeroMemory(alloc->StatusIndex,(size_t) alloc->StatusIndexSize);
+    ZeroMemory(alloc->SplitIndex ,(size_t) alloc->SplitIndexSize);
+    ZeroMemory(alloc->FreeCount  , CORE_MEMORY_ALLOCATOR_MAX_LEVELS * sizeof(uint32_t));
+    /* mark the level-0 block as being free */
+    CORE__MarkMemoryBlockFreeAbsolute(alloc, 0);
+    alloc->FreeCount[0] = 1;
+
+    if (alloc->BytesReserved > 0)
+    {   /* allocate small blocks until BytesReserved is met. 
+           allocating the smallest block size ensures the least amount of waste.
+           contiguous blocks will be allocated, starting from invalid high addresses
+           down to alloc->MemoryStart+(alloc->MemorySize-alloc->BytesReserved). 
+           this leaves the user allocations to take up all of the valid address space. */
+        /*uint32_t  level_size = 1 << alloc->LevelBits[alloc->LevelCount-1];
+        uint32_t block_count =(uint32_t)((alloc->BytesReserved + (level_size-1)) / level_size);
+        uint32_t block_index;
+        CORE_MEMORY_BLOCK  b;
+        for (block_index = 0; block_index < block_count; ++block_index)
+        {
+            (void) CORE_MemoryAllocate(alloc, level_size, level_size, &b);
+            assert((uint64_t) b.HostAddress >= (alloc->MemoryStart+(alloc->MemorySize-alloc->BytesReserved)));
+            assert(b.BlockOffset >= alloc->MemorySize);
+        }*/
+    }
+}
+
 CORE_API(int)
 CORE_MemoryAllocate
 (
@@ -1849,13 +1865,10 @@ CORE_MemoryAllocate
     CORE_MEMORY_BLOCK     *block
 )
 {
-    uint32_t      pow2_size;
+    umword_t      pow2_size;
     uint32_t      level_idx;
     uint32_t      check_idx;
-    uint32_t  parent_offset;
-    uint32_t  return_offset;
     unsigned long bit_index;
-    CORE__MEMORY_BLOCK_INFO block_info;
 
     if (size < alignment)
     {   /* round up to the requested alignment */
@@ -1863,7 +1876,7 @@ CORE_MemoryAllocate
     }
     if (size < alloc->AllocationSizeMin)
     {   /* round up to the minimum possible block size */
-        size =(size_t) alloc->AllocationSizeMin;
+        size =(size_t)(alloc->AllocationSizeMin);
     }
     if (alignment > alloc->AllocationSizeMin)
     {   assert(alignment <= alloc->AllocationSizeMin);
@@ -1877,14 +1890,14 @@ CORE_MemoryAllocate
     }
 
     /* round the requested allocation size up to the nearest power of two >= size */
-    if ((pow2_size =(uint32_t) CORE__MemoryNextPow2GreaterOrEqual(size)) > alloc->AllocationSizeMax)
+    if ((pow2_size = CORE__MemoryNextPow2GreaterOrEqual(size)) > alloc->AllocationSizeMax)
     {   assert(pow2_size <= alloc->AllocationSizeMax);
         SetLastError(ERROR_INVALID_PARAMETER);
         return -1;
     }
 
     /* figure out what level the specified size corresponds to */
-    _BitScanReverse(&bit_index, pow2_size);
+    CORE_BitScanReverse(&bit_index, pow2_size);
     level_idx = alloc->LevelBits[0] - bit_index;
     check_idx = level_idx;
 
@@ -1892,35 +1905,59 @@ CORE_MemoryAllocate
     for ( ; ; )
     {   /* if the free list is not empty, the allocation can be satisfied at this level */
         if (alloc->FreeCount[check_idx] > 0)
-        {   /* perform splits from check_idx (<= level_idx) to level_idx.
-               this process splits larger blocks into multiple smaller blocks. */
+        {
+            CORE__MEMORY_BLOCK_INFO block_info;
+            umword_t              *split_index = (umword_t*) alloc->SplitIndex;
+            umword_t             *status_index = (umword_t*) alloc->StatusIndex;
+            umword_t          block_index_word;
+            umword_t          block_index_mask;
+            umword_t        child_index_word_l;
+            umword_t        child_index_mask_l;
+            umword_t        child_index_word_r;
+            umword_t        child_index_mask_r;
+            uint32_t               block_index;
+            uint32_t             child_index_l;
+            uint32_t             child_index_r;
+            uint64_t              block_offset;
+            uint64_t                block_size;
+
+            /* locate the first free memory block at level check_idx */
+            CORE__FindFreeMemoryBlockAtLevel(&block_info, alloc, check_idx);
+            block_index_mask = block_info.IndexMask;
+            block_index_word = block_info.IndexWord;
+            block_index      = block_info.BlockAbsoluteIndex;
+            block_offset     = block_info.BlockOffset;
+            block_size       = block_info.BlockSize;
+
             while (check_idx < level_idx)
-            {   /* pop an offset from the parent level's free list and split */
-                parent_offset = CORE__BuddyAllocatorPopFreeOffset(alloc, check_idx);
-                CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&parent_info, alloc, parent_offset, check_idx);
-                split_info = CORE__BuddyAllocatorSplitIndexInfo(&parent_info);
-
-                /* mark the larger parent block as having been split */
-                alloc->SplitIndex[split_info.WordIndex] |= split_info.Mask;
-
-                /* insert two blocks into the free list of the next-smaller level */
-                CORE__BuddyAllocatorPushFreeOffset(alloc, parent_offset                               , check_idx+1);
-                CORE__BuddyAllocatorPushFreeOffset(alloc, parent_offset + (parent_info.BlockSize >> 1), check_idx+1);
+            {   /* split block at check_idx into two equally-sized smaller blocks at level check_idx+1 */
+                child_index_l      = (block_index * 2) + 1;
+                child_index_r      = (block_index * 2) + 2;
+                child_index_mask_l = CORE_MEMORY_WORDSIZE_ONE << (child_index_l & CORE_MEMORY_WORDSIZE_MASK);
+                child_index_mask_r = CORE_MEMORY_WORDSIZE_ONE << (child_index_r & CORE_MEMORY_WORDSIZE_MASK);
+                child_index_word_l = child_index_l >> CORE_MEMORY_WORDSIZE_SHIFT;
+                child_index_word_r = child_index_r >> CORE_MEMORY_WORDSIZE_SHIFT;
+                /* update index data */
+                status_index[child_index_word_l] |= child_index_mask_l; /* mark block child_index_l as available */
+                status_index[child_index_word_r] |= child_index_mask_r; /* mark block child_index_r as available */
+                status_index[block_index_word  ] &=~block_index_mask;   /* mark block block_index as unavailable */
+                split_index [block_index_word  ] |= block_index_mask;   /* mark block block_index as split */
+                alloc->FreeCount[check_idx+1] = 2;                      /* two free blocks produced at level check_idx+1 */
+                alloc->FreeCount[check_idx]--;                          /* one block claimed at level check_idx */
+                /* update the current block - the block offset does not change */
+                block_index_mask   = child_index_mask_l;
+                block_index_word   = child_index_word_l;
+                block_index        = child_index_l;
+                block_size       >>= 1;
                 check_idx++;
             }
 
-            /* return a block from level_idx, which is known to have at least one free block */
-            return_offset = CORE__BuddyAllocatorPopFreeOffset(alloc, level_idx);
-            CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&block_info, alloc, return_offset, level_idx);
-            merge_info = CORE__BuddyAllocatorMergeIndexInfo(&block_info);
-
-            /* toggle the buddy pair bit representing the pair allocation state.
-             * if both blocks are allocated, the bit will be set to 0.
-             * if only the block at return_offset is allocated, the bit will be set to 1. */
-            alloc->MergeIndex[merge_info.WordIndex] ^= merge_info.Mask;
-            block->SizeInBytes   = block_info.BlockSize;
-            block->BlockOffset   = return_offset;
-            block->HostAddress   = alloc->AllocatorType == CORE_MEMORY_ALLOCATOR_TYPE_HOST ? ((uint8_t*) alloc->MemoryStart + return_offset) : NULL;
+            /* claim the block at level level_idx */
+            status_index[block_index_word] &= ~block_index_mask;
+            alloc->FreeCount[level_idx]--;
+            block->SizeInBytes   = block_size;
+            block->BlockOffset   = block_offset;
+            block->HostAddress   = alloc->AllocatorType == CORE_MEMORY_ALLOCATOR_TYPE_HOST ? ((uint8_t*) (uintptr_t) alloc->MemoryStart + block_offset) : NULL;
             block->AllocatorType = alloc->AllocatorType;
             /* if this was a level 0 allocation (the largest possible block size)
              * then SizeInBytes may have to be adjusted downward by BytesReserved. */
@@ -1955,6 +1992,121 @@ CORE_MemoryAllocateHost
     return block->HostAddress;
 }
 
+CORE_API(void)
+CORE_MemoryFree
+(
+    CORE_MEMORY_ALLOCATOR *alloc, 
+    CORE_MEMORY_BLOCK  *existing
+)
+{
+    umword_t        *status_index = (umword_t*) alloc->StatusIndex;
+    umword_t         *split_index = (umword_t*) alloc->SplitIndex;
+    umword_t            pow2_size = (umword_t ) CORE__MemoryNextPow2GreaterOrEqual((size_t) existing->SizeInBytes);
+    unsigned long       bit_index;
+    uint32_t          level_index;
+    CORE__MEMORY_BLOCK_INFO block;
+
+    CORE_BitScanReverse(&bit_index, pow2_size);
+    level_index = alloc->LevelBits[0] - bit_index;
+    CORE__QueryMemoryBlockInfoWithKnownLevel(&block, alloc, existing->BlockOffset, level_index);
+
+    for ( ; ; )
+    {   /* we have the address of this block and its buddy, merge up */
+        /* stop when the status bit for the buddy block is 0 */
+        /* parent block is LeftAbsoluteIndex / 2; LeftAbsoluteIndex is always odd */
+    }
+}
+
+CORE_API(void)
+CORE_MemoryFree
+(
+    CORE_MEMORY_ALLOCATOR *alloc, 
+    CORE_MEMORY_BLOCK  *existing
+)
+{   /* in the merge index:
+     * - the bit is 0 if both the block and its buddy are allocated, or both are free.
+     * - the bit is 1 if one of the blocks is allocated and the other is free.
+     * - there is no entry for level 0, because the level 0 block has no buddy.
+     *
+     * in the split index:
+     * - the bit i is 0 if the block with absolute index i has not been split.
+     * - the bit i is 1 if the block with absolute index i has been split.
+     * - there are no entries for the blocks at level alloc->LevelCount-1 because these cannot be split.
+     *
+     * initialize block_offset = (uint32_t) existing->BlockOffset;
+     * initialize level_index  =  alloc->LevelBits[0] - bit_index;
+     *
+     * while (level_idx > 0) {
+     *   get information about the block at offset block_offset and level level_index.
+     *   toggle the status bit in the merge index to mark the block as being free.
+     *   if the status bit is now 0 (ie. was 1), then the block and its buddy can be merged:
+     *   - remove the buddy block from the free list.
+     *   - clear the status bit in the split index for the parent block.
+     *   - update the block offset to point to the merged block.
+     *   - decrement the level index.
+     *   else, no merge can be performed because the buddy block is not free, so break.
+     * }
+     * return the block at block_offset to the free list for level_index. */
+    uint32_t                   *merge_index;
+    uint32_t                   *split_index;
+    uint32_t                   **free_lists;
+    uint32_t                    *free_count;
+    uint32_t                    *level_free;
+    uint32_t                     prev_state;
+    uint32_t                           i, n;
+    uint32_t                      pow2_size;
+    unsigned long                 bit_index;
+    uint32_t                    level_index;
+    uint32_t                   block_offset;
+    uint32_t                   buddy_offset;
+    CORE__BUDDY_BLOCK_INFO      parent_info;
+    CORE__BUDDY_BLOCK_INFO       block_info;
+    CORE__BUDDY_BLOCK_MERGE_INFO merge_info;
+    CORE__BUDDY_BLOCK_SPLIT_INFO split_info;
+
+    merge_index  =  alloc->MergeIndex;
+    split_index  =  alloc->SplitIndex;
+    free_lists   =  alloc->FreeLists;
+    free_count   =  alloc->FreeCount;
+
+    pow2_size    = (uint32_t) CORE__MemoryNextPow2GreaterOrEqual(existing->SizeInBytes);
+    block_offset = (uint32_t) existing->BlockOffset;
+    _BitScanReverse(&bit_index, pow2_size);
+    level_index  = (alloc->LevelBits[0] - bit_index);
+
+    while (level_index > 0)
+    {
+        CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&block_info, alloc, block_offset, level_index);
+        merge_info  = CORE__BuddyAllocatorMergeIndexInfo(&block_info);
+        prev_state  = merge_index[merge_info.WordIndex] & merge_info.Mask;
+        if (prev_state)
+        {
+            level_index   = level_index - 1;
+            block_offset  =(block_info.LeftAbsoluteIndex  - block_info.IndexOffset) * block_info.BlockSize;
+            buddy_offset  =(block_info.BuddyAbsoluteIndex - block_info.IndexOffset) * block_info.BlockSize;
+            level_free    = free_lists[block_info.LevelIndex];
+            for (i = 0, n = free_count[block_info.LevelIndex]; i < n; ++i)
+            {
+                if (level_free[i] == buddy_offset)
+                {
+                    free_count[block_info.LevelIndex] = n-1;
+                    level_free[i] = level_free[n-1];
+                    break;
+                }
+            }
+            CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&parent_info, alloc, block_offset, level_index);
+            split_info  = CORE__BuddyAllocatorSplitIndexInfo(&parent_info);
+            split_index[split_info.WordIndex] &= ~split_info.Mask;
+        }
+        else break;
+    }
+    CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&block_info, alloc, block_offset, level_index);
+    merge_info  = CORE__BuddyAllocatorMergeIndexInfo(&block_info);
+    merge_index[merge_info.WordIndex] ^= merge_info.Mask;
+    CORE__BuddyAllocatorPushFreeOffset(alloc, block_offset, level_index);
+}
+
+#if 0
 CORE_API(int)
 CORE_MemoryReallocate
 (
@@ -2132,125 +2284,6 @@ CORE_MemoryReallocateHost
     else return NULL;
 }
 
-CORE_API(void)
-CORE_MemoryFree
-(
-    CORE_MEMORY_ALLOCATOR *alloc, 
-    CORE_MEMORY_BLOCK  *existing
-)
-{   /* in the merge index:
-     * - the bit is 0 if both the block and its buddy are allocated, or both are free.
-     * - the bit is 1 if one of the blocks is allocated and the other is free.
-     * - there is no entry for level 0, because the level 0 block has no buddy.
-     *
-     * in the split index:
-     * - the bit i is 0 if the block with absolute index i has not been split.
-     * - the bit i is 1 if the block with absolute index i has been split.
-     * - there are no entries for the blocks at level alloc->LevelCount-1 because these cannot be split.
-     *
-     * initialize block_offset = (uint32_t) existing->BlockOffset;
-     * initialize level_index  =  alloc->LevelBits[0] - bit_index;
-     *
-     * while (level_idx > 0) {
-     *   get information about the block at offset block_offset and level level_index.
-     *   toggle the status bit in the merge index to mark the block as being free.
-     *   if the status bit is now 0 (ie. was 1), then the block and its buddy can be merged:
-     *   - remove the buddy block from the free list.
-     *   - clear the status bit in the split index for the parent block.
-     *   - update the block offset to point to the merged block.
-     *   - decrement the level index.
-     *   else, no merge can be performed because the buddy block is not free, so break.
-     * }
-     * return the block at block_offset to the free list for level_index. */
-    uint32_t                   *merge_index;
-    uint32_t                   *split_index;
-    uint32_t                   **free_lists;
-    uint32_t                    *free_count;
-    uint32_t                    *level_free;
-    uint32_t                     prev_state;
-    uint32_t                           i, n;
-    uint32_t                      pow2_size;
-    unsigned long                 bit_index;
-    uint32_t                    level_index;
-    uint32_t                   block_offset;
-    uint32_t                   buddy_offset;
-    CORE__BUDDY_BLOCK_INFO      parent_info;
-    CORE__BUDDY_BLOCK_INFO       block_info;
-    CORE__BUDDY_BLOCK_MERGE_INFO merge_info;
-    CORE__BUDDY_BLOCK_SPLIT_INFO split_info;
-
-    merge_index  =  alloc->MergeIndex;
-    split_index  =  alloc->SplitIndex;
-    free_lists   =  alloc->FreeLists;
-    free_count   =  alloc->FreeCount;
-
-    pow2_size    = (uint32_t) CORE__MemoryNextPow2GreaterOrEqual(existing->SizeInBytes);
-    block_offset = (uint32_t) existing->BlockOffset;
-    _BitScanReverse(&bit_index, pow2_size);
-    level_index  = (alloc->LevelBits[0] - bit_index);
-
-    while (level_index > 0)
-    {
-        CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&block_info, alloc, block_offset, level_index);
-        merge_info  = CORE__BuddyAllocatorMergeIndexInfo(&block_info);
-        prev_state  = merge_index[merge_info.WordIndex] & merge_info.Mask;
-        if (prev_state)
-        {
-            level_index   = level_index - 1;
-            block_offset  =(block_info.LeftAbsoluteIndex  - block_info.IndexOffset) * block_info.BlockSize;
-            buddy_offset  =(block_info.BuddyAbsoluteIndex - block_info.IndexOffset) * block_info.BlockSize;
-            level_free    = free_lists[block_info.LevelIndex];
-            for (i = 0, n = free_count[block_info.LevelIndex]; i < n; ++i)
-            {
-                if (level_free[i] == buddy_offset)
-                {
-                    free_count[block_info.LevelIndex] = n-1;
-                    level_free[i] = level_free[n-1];
-                    break;
-                }
-            }
-            CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&parent_info, alloc, block_offset, level_index);
-            split_info  = CORE__BuddyAllocatorSplitIndexInfo(&parent_info);
-            split_index[split_info.WordIndex] &= ~split_info.Mask;
-        }
-        else break;
-    }
-    CORE__QueryBuddyAllocatorBlockInfoWithKnownLevel(&block_info, alloc, block_offset, level_index);
-    merge_info  = CORE__BuddyAllocatorMergeIndexInfo(&block_info);
-    merge_index[merge_info.WordIndex] ^= merge_info.Mask;
-    CORE__BuddyAllocatorPushFreeOffset(alloc, block_offset, level_index);
-}
-
-CORE_API(void)
-CORE_MemoryAllocatorReset
-(
-    CORE_MEMORY_ALLOCATOR *alloc
-)
-{   /* return the merge and split indexes to their initial state.
-     * zero out all of the free list entries.
-     * return level 0 block 0 to the free list. */
-    ZeroMemory(alloc->MergeIndex, (1 << (alloc->LevelCount-1)) / 8);
-    ZeroMemory(alloc->SplitIndex, (1 << (alloc->LevelCount-1)) / 8);
-    ZeroMemory(alloc->FreeCount , CORE_BUDDY_ALLOCATOR_MAX_LEVELS * sizeof(uint32_t));
-    CORE__BuddyAllocatorPushFreeOffset(alloc, 0, 0);
-    if (alloc->BytesReserved > 0)
-    {   /* allocate small blocks until BytesReserved is met. 
-           allocating the smallest block size ensures the least amount of waste.
-           contiguous blocks will be allocated, starting from invalid high addresses
-           down to alloc->MemoryStart+(alloc->MemorySize-alloc->BytesReserved). 
-           this leaves the user allocations to take up all of the valid address space. */
-        uint32_t  level_size = 1 << alloc->LevelBits[alloc->LevelCount-1];
-        uint32_t block_count =(uint32_t)((alloc->BytesReserved + (level_size-1)) / level_size);
-        uint32_t block_index;
-        CORE_MEMORY_BLOCK  b;
-        for (block_index = 0; block_index < block_count; ++block_index)
-        {
-            (void) CORE_MemoryAllocate(alloc, level_size, level_size, &b);
-            assert((uint64_t) b.HostAddress >= (alloc->MemoryStart+(alloc->MemorySize-alloc->BytesReserved)));
-            assert(b.BlockOffset >= alloc->MemorySize);
-        }
-    }
-}
 #endif
 
 #endif /* CORE_MEMORY_IMPLEMENTATION */
