@@ -168,7 +168,7 @@ DumpSplitIndex
     (void) index_size;
     (void) global_block_count;
 
-    ConsoleOutput("Split Index  (%02u levels): ", (level_count-1));
+    ConsoleOutput("Split  Index (%02u levels): ", (level_count-1));
     while (level_index < (level_count-1))
     {   assert(global_block_index < global_block_count);
         level_block_count  = 1UL << level_index;
