@@ -196,112 +196,22 @@ DumpSplitIndex
     ConsoleOutput("\n");
 }
 
-#if 0
 static void
-DumpMergeIndex
+DumpFreeCounts
 (
-    CORE_MEMORY_ALLOCATOR *alloc
+    uint32_t *free_counts, 
+    uint32_t  level_count
 )
 {
-    uint32_t    i, j;
-    uint32_t     bit;
-    uint32_t bit_idx = 0;
-    uint32_t   nbits = 0;
-    uint32_t nlevels = alloc->LevelCount;
-    uint32_t  *index = alloc->MergeIndex;
-    uint32_t    word =*index;
-    ConsoleOutput("MERGE INDEX:\n");
-    ConsoleOutput("L00: -\n");
-    for (i = 1; i < nlevels; ++i)
-    {
-        nbits = 1 << (i - 1);
-        ConsoleOutput("L%02u:",  i);
-        for (j = 0; j < nbits; ++j)
-        {
-            bit = (word >> bit_idx) & 0x1;
-            bit_idx++;
-            ConsoleOutput("%u", bit);
-            if (bit_idx == 32)
-            {
-                index++;
-                word = *index;
-                bit_idx = 0;
-            }
-        }
-        ConsoleOutput("\n");
-    }
-}
+    uint32_t level_index;
 
-static void
-DumpSplitIndex
-(
-    CORE_MEMORY_ALLOCATOR *alloc
-)
-{
-    uint32_t    i, j;
-    uint32_t     bit;
-    uint32_t bit_idx = 0;
-    uint32_t   nbits = 0;
-    uint32_t nlevels = alloc->LevelCount;
-    uint32_t  *index = alloc->SplitIndex;
-    uint32_t    word =*index;
-    ConsoleOutput("SPLIT INDEX:\n");
-    for (i = 0; i < nlevels - 1; ++i)
+    ConsoleOutput("Free  Counts (%02u levels): ", level_count);
+    for (level_index = 0; level_index < level_count; ++level_index)
     {
-        nbits = 1 << i;
-        ConsoleOutput("L%02u:",  i);
-        for (j = 0; j < nbits; ++j)
-        {
-            bit = (word >> bit_idx) & 0x1;
-            bit_idx++;
-            ConsoleOutput("%u", bit);
-            if (bit_idx == 32)
-            {
-                index++;
-                word = *index;
-                bit_idx = 0;
-            }
-        }
-        ConsoleOutput("\n");
+        ConsoleOutput("%06u ", free_counts[level_index]);
     }
+    ConsoleOutput("\n");
 }
-
-static void
-DumpFreeLists
-(
-    CORE_MEMORY_ALLOCATOR *alloc
-)
-{
-    uint32_t i, j, n;
-    uint32_t nlevels = alloc->LevelCount;
-    ConsoleOutput("FREE LISTS:\n");
-    for (i = 0; i < nlevels; ++i)
-    {
-        ConsoleOutput("L%02u: %u [", i, alloc->FreeCount[i]);
-        for (j = 0, n = alloc->FreeCount[i]; j < n; ++j)
-        {
-            ConsoleOutput("%u", alloc->FreeLists[i][j]);
-            if (j != (n-1))
-                ConsoleOutput(", ");
-        }
-        ConsoleOutput("]\n");
-    }
-}
-
-static void
-DumpAllocatorState
-(
-    CORE_MEMORY_ALLOCATOR *alloc
-)
-{
-    DumpMergeIndex(alloc);
-    ConsoleOutput("-------------------------------------------------------------\n");
-    DumpSplitIndex(alloc);
-    ConsoleOutput("-------------------------------------------------------------\n");
-    DumpFreeLists(alloc);
-    ConsoleOutput("=============================================================\n\n");
-}
-#endif
 
 /*////////////////////////
 //   Public Functions   //
@@ -381,11 +291,19 @@ main
         return 1;
     }
 
+#define UNITS_MIN    Kilobytes
+#define UNITS_MAX    Kilobytes
+#define VIRTUAL_SIZE 512
+#define RESERVE_SIZE  32
+#define MINIMUM_SIZE  16
+#define MAXIMUM_SIZE VIRTUAL_SIZE
+#define ACTUAL_SIZE (UNITS_MAX(VIRTUAL_SIZE)-UNITS_MAX(RESERVE_SIZE))
+
     /* figure out how much memory we need to store the allocator state for our general-purpose allocator config.
      * the minimum and maximum allocation size must be powers of two, but we only have 14MB to work with.
      * to get around this, we specify a maximum size of 16MB (a power of two) and then use BytesReserved.
      */
-    if ((state_size = CORE_QueryMemoryAllocatorStateSize(Kilobytes(16), /*Megabytes(16)*/Kilobytes(64))) == 0)
+    if ((state_size = CORE_QueryMemoryAllocatorStateSize(UNITS_MIN(MINIMUM_SIZE), UNITS_MAX(MAXIMUM_SIZE))) == 0)
     {
         ConsoleError("ERROR: Failed to determine memory allocator state data requirement.\n");
         return 1;
@@ -400,14 +318,11 @@ main
     /* initialize a general-purpose memory allocator */
     host_alloc_init.AllocatorName     = "Main Data";                           /* Assign a string literal for debugging */
     host_alloc_init.AllocatorType     = CORE_MEMORY_ALLOCATOR_TYPE_HOST;       /* The allocator manages host-visible memory */
-    host_alloc_init.AllocationSizeMin = Kilobytes(16);                         /* Minimum allocation size. Must be a power-of-two. */
-    //host_alloc_init.AllocationSizeMax = Megabytes(16);                         /* Maximum allocation size. Must be a power-of-two. */
-    //host_alloc_init.BytesReserved     = Megabytes(2);                          /* Reserve 2MB, because we only have 14MB to work with. */
-    host_alloc_init.AllocationSizeMax = Kilobytes(64);
-    host_alloc_init.BytesReserved     = 0;
+    host_alloc_init.AllocationSizeMin = UNITS_MIN(MINIMUM_SIZE);               /* Minimum allocation size. Must be a power-of-two. */
+    host_alloc_init.AllocationSizeMax = UNITS_MAX(MAXIMUM_SIZE);               /* Maximum allocation size. Must be a power-of-two. */
+    host_alloc_init.BytesReserved     = UNITS_MIN(RESERVE_SIZE);               /* Reserve 2MB, because we only have 14MB to work with. */
     host_alloc_init.MemoryStart       =(uint64_t) host_mem->BaseAddress;       /* The host-visible address of representing the start of the memory block. */
-    //host_alloc_init.MemorySize        =(uint64_t) host_mem->BytesCommitted;    /* The size of the memory block, in bytes. */
-    host_alloc_init.MemorySize        =(uint64_t) Kilobytes(64);
+    host_alloc_init.MemorySize        =(uint64_t) ACTUAL_SIZE;                 /* The actual amount of addressable memory. */
     host_alloc_init.StateData         = state_data;                            /* Space for the allocator state data. */
     host_alloc_init.StateDataSize     = state_size;                            /* The number of bytes allocated for allocator state data. */
     host_alloc_init.UserData          = &host_mem;                             /* Specify any data you want here, up to CORE_MEMORY_ALLOCATOR_MAX_USER bytes. */
@@ -422,6 +337,7 @@ main
      * some of these tests don't make sense from the perspective of an allocator, 
      * but we want to verify that the index manipulation functions work as intended.
      */
+#if 0
     block_index        = 0; (void) b; (void) max_blocks;
     global_level_count = host_alloc.LevelCount;
     global_level_index = 0;
@@ -469,49 +385,68 @@ main
         prior_block_count += level_block_count;
         global_level_index++;
     }
+#endif
 
     /* re-initialize the memory allocator state since we mucked with it above */
+#if 0
     CORE_InitMemoryAllocator(&host_alloc, &host_alloc_init);
+#endif
 
-    /* allocate as many 16KB blocks as will fit in the 14MB we have available */
-    ConsoleOutput("ALLOCATIONS\n");
-    //max_blocks = Megabytes(14) / Kilobytes(16);
-    max_blocks = Kilobytes(64) / Kilobytes(16);
+    ConsoleOutput("INITIAL STATE\n");
+    DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
+    DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
+    DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
+    ConsoleOutput("\n");
+
+    /* allocate as many blocks as will fit in the available storage */
+    ConsoleOutput("ALLOCATIONS\n\n");
+    max_blocks = ACTUAL_SIZE / UNITS_MIN(MINIMUM_SIZE);
     for (block_index = 0; block_index < max_blocks; ++block_index)
     {
-        res = CORE_MemoryAllocate(&host_alloc, Kilobytes(16), CORE_AlignOf(uint32_t), &b);
+        res = CORE_MemoryAllocate(&host_alloc, UNITS_MIN(MINIMUM_SIZE), 0, &b);
         assert(res == 0 && "Memory allocation failed when it should have succeeded");
         assert((uint64_t) b.HostAddress >= host_alloc_init.MemoryStart);
         assert(b.BlockOffset >= 0);
         assert(b.BlockOffset < (host_alloc_init.MemoryStart + host_alloc_init.MemorySize));
-        //DumpBlock(&b);
+        DumpBlock(&b);
         DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
         DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
+        DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
+        ConsoleOutput("\n");
     }
     /* the next allocation attempt had better fail */
-    res = CORE_MemoryAllocate(&host_alloc, Kilobytes(16), CORE_AlignOf(uint32_t), &b);
+    res = CORE_MemoryAllocate(&host_alloc, UNITS_MIN(MINIMUM_SIZE), 0, &b);
     assert(res == -1 && "Memory allocation succeeded when it should have failed");
-    ConsoleOutput("FREES\n");
+    ConsoleOutput("FREES\n\n");
     /* free all blocks */
     for (block_index = 0; block_index < max_blocks; ++block_index)
     {
-        b.SizeInBytes   =  Kilobytes(16);
-        b.BlockOffset   = (block_index) * Kilobytes(16);
-        b.HostAddress   = (void*)(host_alloc_init.MemoryStart + b.BlockOffset);
+        b.SizeInBytes   =  UNITS_MIN(MINIMUM_SIZE);
+        b.BlockOffset   = (block_index) * UNITS_MIN(MINIMUM_SIZE);
+        b.HostAddress   = (void*)(uintptr_t)(host_alloc_init.MemoryStart + b.BlockOffset);
         b.AllocatorType =  CORE_MEMORY_ALLOCATOR_TYPE_HOST;
         CORE_MemoryFree(&host_alloc, &b);
-        //DumpBlock(&b);
+        DumpBlock(&b);
         DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
         DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
+        DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
+        ConsoleOutput("\n");
     }
+
+    ConsoleOutput("FINAL STATE\n");
+    DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
+    DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
+    DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
+    ConsoleOutput("\n");
+
     /* a 16MB allocation should fail, because we only really have 14MB */
-    //res = CORE_MemoryAllocate(&host_alloc, Megabytes(16), CORE_AlignOf(uint32_t), &b);
-    //assert(res == -1 && "Memory allocation for 16MB succeeded when it should have failed");
+    res = CORE_MemoryAllocate(&host_alloc, Megabytes(16), CORE_AlignOf(uint32_t), &b);
+    assert(res == -1 && "Memory allocation for 16MB succeeded when it should have failed");
     /* a 14MB allocation should succeed, because we actually have that memory */
-    //res = CORE_MemoryAllocate(&host_alloc, Megabytes(14), CORE_AlignOf(uint32_t), &b);
-    //assert(res ==  0 && "Memory allocation failed when it should have succeeded");
-    //assert((uint64_t) b.HostAddress == host_alloc_init.MemoryStart);
-    //assert(b.BlockOffset == 0);
+    /*res = CORE_MemoryAllocate(&host_alloc, Megabytes(14), CORE_AlignOf(uint32_t), &b);
+    assert(res ==  0 && "Memory allocation failed when it should have succeeded");
+    assert((uint64_t) b.HostAddress == host_alloc_init.MemoryStart);
+    assert(b.BlockOffset == 0);*/
 
     /* ... */
 
