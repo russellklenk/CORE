@@ -75,6 +75,71 @@
 /*//////////////////////////
 //   Internal Functions   //
 //////////////////////////*/
+static uint64_t
+TimestampInTicks
+(
+    void
+)
+{
+    LARGE_INTEGER ticks;
+    QueryPerformanceCounter(&ticks);
+    return (uint64_t) ticks.QuadPart;
+}
+
+static uint64_t
+TimestampInNanoseconds
+(
+    void
+)
+{
+    LARGE_INTEGER freq;
+    LARGE_INTEGER ticks;
+    QueryPerformanceCounter(&ticks);
+    QueryPerformanceFrequency(&freq);
+    return (1000000000ULL * (uint64_t)(ticks.QuadPart)) / (uint64_t)(freq.QuadPart);
+}
+
+static uint64_t
+NanosecondSliceOfSecond
+(
+    uint64_t fraction
+)
+{
+    return 1000000000ULL / fraction;
+}
+
+static uint64_t
+ElapsedNanoseconds
+(
+    uint64_t start_ticks, 
+    uint64_t   end_ticks
+)
+{   
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    // scale the tick value by the nanoseconds-per-second multiplier
+    // before scaling back down by ticks-per-second to avoid loss of precision.
+    return (1000000000ULL * (end_ticks - start_ticks)) / (uint64_t)(freq.QuadPart);
+}
+
+static uint64_t
+MillisecondsToNanoseconds
+(
+    uint32_t milliseconds
+)
+{
+    return ((uint64_t)(milliseconds)) * 1000000ULL;
+}
+
+static uint32_t
+NanosecondsToWholeMilliseconds
+(
+    uint64_t nanoseconds
+)
+{
+    return (uint32_t)(nanoseconds / 1000000ULL);
+}
+
 static void
 DumpBlock
 (
@@ -227,6 +292,7 @@ main
     char **argv
 )
 {
+    void                       **addrs;
     void                        *state_data;
     size_t                       state_size;
     size_t                       max_blocks;
@@ -240,6 +306,8 @@ main
     CORE_MEMORY_ALLOCATOR        host_alloc;
     CORE_MEMORY_ALLOCATOR_INIT   host_alloc_init;
     CORE_MEMORY_BLOCK            b, b1;
+    uint64_t                     time_s;
+    uint64_t                     time_e;
     uint64_t                     block_size;
     uint64_t                     block_offset;
     uint32_t                     global_level_index;
@@ -247,6 +315,7 @@ main
     uint32_t                     level_block_count;
     uint32_t                     level_block_index;
     uint32_t                     prior_block_count;
+    uint32_t                     i;
     int                          res;
 
     UNREFERENCED_PARAMETER(argc);
@@ -293,9 +362,9 @@ main
 
 #define UNITS_MIN    Kilobytes
 #define UNITS_MAX    Kilobytes
-#define VIRTUAL_SIZE 512
-#define RESERVE_SIZE  32
-#define MINIMUM_SIZE  16
+#define VIRTUAL_SIZE 16 * 1024
+#define RESERVE_SIZE 0
+#define MINIMUM_SIZE 16
 #define MAXIMUM_SIZE VIRTUAL_SIZE
 #define ACTUAL_SIZE (UNITS_MAX(VIRTUAL_SIZE)-UNITS_MAX(RESERVE_SIZE))
 
@@ -311,6 +380,13 @@ main
     if ((state_data = CORE_MemoryArenaAllocateHost(&host_metadata_arena, state_size, CORE_AlignOf(CORE_MEMORY_ALLOCATOR), NULL)) == NULL)
     {
         ConsoleError("ERROR: Failed to allocate %Iu bytes for general-purpose allocator state.\n", state_size);
+        return 1;
+    }
+
+    /* allocate some memory for storing host addresses for performance testing purposes */
+    if ((addrs = CORE_MemoryArenaAllocateHost(&host_metadata_arena, UNITS_MAX(MAXIMUM_SIZE) / UNITS_MIN(MINIMUM_SIZE) * sizeof(void*), CORE_AlignOf(void*), NULL)) == NULL)
+    {
+        ConsoleError("ERROR: Failed to allocate performance testing memory.\n");
         return 1;
     }
 
@@ -392,14 +468,14 @@ main
     CORE_InitMemoryAllocator(&host_alloc, &host_alloc_init);
 #endif
 
-    ConsoleOutput("INITIAL STATE\n");
+    /*ConsoleOutput("INITIAL STATE\n");
     DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
     DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
     DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
-    ConsoleOutput("\n");
+    ConsoleOutput("\n");*/
 
     /* allocate as many blocks as will fit in the available storage */
-    ConsoleOutput("ALLOCATIONS\n\n");
+    /*ConsoleOutput("ALLOCATIONS\n\n");*/
     max_blocks = ACTUAL_SIZE / UNITS_MIN(MINIMUM_SIZE);
     for (block_index = 0; block_index < max_blocks; ++block_index)
     {
@@ -417,7 +493,7 @@ main
     /* the next allocation attempt had better fail */
     res = CORE_MemoryAllocate(&host_alloc, UNITS_MIN(MINIMUM_SIZE), 0, &b);
     assert(res == -1 && "Memory allocation succeeded when it should have failed");
-    ConsoleOutput("FREES\n\n");
+    /*ConsoleOutput("FREES\n\n");*/
     /* free all blocks */
     for (block_index = 0; block_index < max_blocks; ++block_index)
     {
@@ -433,64 +509,139 @@ main
         ConsoleOutput("\n");*/
     }
 
-    ConsoleOutput("FINAL STATE\n");
+    /*ConsoleOutput("FINAL STATE\n");
     DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
     DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
     DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
-    ConsoleOutput("\n");
+    ConsoleOutput("\n");*/
 
     CORE_MemoryAllocatorReset(&host_alloc);
 
-    ConsoleOutput("RESET STATE\n");
+    /*ConsoleOutput("RESET STATE\n");
     DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
     DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
     DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
-    ConsoleOutput("\n");
+    ConsoleOutput("\n");*/
 
     /* test block demotion - a large block is demoted to a smaller block */
     res = CORE_MemoryAllocate(&host_alloc, UNITS_MAX(MAXIMUM_SIZE)>>1, 0, &b);
     assert(res == 0 && "Memory allocation failed when it should have succeeded");
-    ConsoleOutput("PRE-DEMOTION STATE\n");
+    /*ConsoleOutput("PRE-DEMOTION STATE\n");
     DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
     DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
     DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
-    ConsoleOutput("\n");
+    ConsoleOutput("\n");*/
     res = CORE_MemoryReallocate(&host_alloc, &b, UNITS_MIN(MINIMUM_SIZE), 0, &b1);
     assert(res == 0 && "Memory reallocation (demotion) failed when it should have succeeded");
     assert(b1.BlockOffset == b.BlockOffset && "Demoted block changed offsets");
     assert(b1.SizeInBytes == UNITS_MIN(MINIMUM_SIZE) && "Demoted block has unexpected size");
-    ConsoleOutput("POST-DEMOTION STATE\n");
+    /*ConsoleOutput("POST-DEMOTION STATE\n");
     DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
     DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
     DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
-    ConsoleOutput("\n");
+    ConsoleOutput("\n");*/
     /* test block promotion - a smaller block is promoted to a larger block */
     res = CORE_MemoryReallocate(&host_alloc, &b1, (size_t)(b1.SizeInBytes * 2), 0, &b);
     assert(res == 0 && "Memory reallocation (promotion) failed when it should have succeeded");
     assert(b.SizeInBytes == b1.SizeInBytes * 2 && "Promoted block has unexpected size");
     assert(b.BlockOffset == b1.BlockOffset && "Promoted block changed offsets"); /* though this may happen in some cases */
-    ConsoleOutput("POST-PROMOTION STATE\n");
+    /*ConsoleOutput("POST-PROMOTION STATE\n");
     DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
     DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
     DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
-    ConsoleOutput("\n");
+    ConsoleOutput("\n");*/
 
     /* free the allocated block */
     CORE_MemoryFree(&host_alloc, &b);
-    ConsoleOutput("PRE-DOUBLE FREE STATE\n");
+    /*ConsoleOutput("PRE-DOUBLE FREE STATE\n");
     DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
     DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
     DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
-    ConsoleOutput("\n");
+    ConsoleOutput("\n");*/
     /* test a double-free */
     CORE_MemoryFree(&host_alloc, &b);
-    ConsoleOutput("POST-DOUBLE FREE STATE\n");
+    /*ConsoleOutput("POST-DOUBLE FREE STATE\n");
     DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
     DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
     DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
-    ConsoleOutput("\n");
+    ConsoleOutput("\n");*/
 
     /* ... */
+
+    /* performance testing */
+    CORE_MemoryAllocatorReset(&host_alloc);
+    max_blocks = ACTUAL_SIZE / UNITS_MIN(MINIMUM_SIZE);
+    time_s = TimestampInTicks();
+    for (i = 0; i < 100000; ++i)
+    {
+        for (block_index = 0; block_index < max_blocks; ++block_index)
+        {
+            if ((res = CORE_MemoryAllocate(&host_alloc, UNITS_MIN(MINIMUM_SIZE), 0, &b)) == 0)
+            {   /* save the address so it can be freed later */
+                addrs[block_index] = b.HostAddress;
+            }
+            {
+                assert(res == 0 && "Memory allocation failed when it should have succeeded");
+            }
+        }
+        for (block_index = 0; block_index < max_blocks; ++block_index)
+        {
+            b.SizeInBytes   =  UNITS_MIN(MINIMUM_SIZE);
+            b.BlockOffset   = (block_index) * UNITS_MIN(MINIMUM_SIZE);
+            b.HostAddress   = (void*)(uintptr_t)(host_alloc_init.MemoryStart + b.BlockOffset);
+            b.AllocatorType =  CORE_MEMORY_ALLOCATOR_TYPE_HOST;
+            CORE_MemoryFree(&host_alloc, &b);
+        }
+    }
+    time_e = TimestampInTicks();
+    ConsoleOutput("CORE allocator took %u milliseconds.\n", NanosecondsToWholeMilliseconds(ElapsedNanoseconds(time_s, time_e)));
+    CORE_MemoryAllocatorReset(&host_alloc);
+
+    time_s = TimestampInTicks();
+    for (i = 0; i < 10000; ++i)
+    {
+        for (block_index = 0; block_index < max_blocks; ++block_index)
+        {
+            void *p;
+            if  ((p = malloc(UNITS_MIN(MINIMUM_SIZE))) != NULL)
+            {
+                addrs[block_index] = p;
+            }
+            else
+            {
+                assert(p != NULL && "Memory allocation failed when it should have succeeded");
+            }
+        }
+        for (block_index = 0; block_index < max_blocks; ++block_index)
+        {
+            free(addrs[block_index]);
+        }
+    }
+    time_e = TimestampInTicks();
+    ConsoleOutput("malloc took %u milliseconds.\n", NanosecondsToWholeMilliseconds(ElapsedNanoseconds(time_s, time_e)));
+
+    time_s = TimestampInTicks();
+    for (i = 0; i < 10000; ++i)
+    {
+        for (block_index = 0; block_index < max_blocks; ++block_index)
+        {
+            void *p;
+            if  ((p = VirtualAlloc(NULL, UNITS_MIN(MINIMUM_SIZE), MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE)) != NULL)
+            {
+                addrs[block_index] = p;
+            }
+            else
+            {
+                assert(p != NULL && "Memory allocation failed when it should have succeeded");
+            }
+        }
+        for (block_index = 0; block_index < max_blocks; ++block_index)
+        {
+            VirtualFree(addrs[block_index], 0, MEM_RELEASE);
+        }
+    }
+    time_e = TimestampInTicks();
+    ConsoleOutput("VirtualAlloc took %u milliseconds.\n", NanosecondsToWholeMilliseconds(ElapsedNanoseconds(time_s, time_e)));
 
     /* cleanup. generally you can just call CORE_DeleteHostMemoryPool, but this is test code. */
     CORE_HostMemoryRelease(host_mem);
