@@ -239,7 +239,7 @@ main
     CORE_MEMORY_ARENA_INIT       host_metadata_arena_init;
     CORE_MEMORY_ALLOCATOR        host_alloc;
     CORE_MEMORY_ALLOCATOR_INIT   host_alloc_init;
-    CORE_MEMORY_BLOCK            b;
+    CORE_MEMORY_BLOCK            b, b1;
     uint64_t                     block_size;
     uint64_t                     block_offset;
     uint32_t                     global_level_index;
@@ -408,11 +408,11 @@ main
         assert((uint64_t) b.HostAddress >= host_alloc_init.MemoryStart);
         assert(b.BlockOffset >= 0);
         assert(b.BlockOffset < (host_alloc_init.MemoryStart + host_alloc_init.MemorySize));
-        DumpBlock(&b);
+        /*DumpBlock(&b);
         DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
         DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
         DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
-        ConsoleOutput("\n");
+        ConsoleOutput("\n");*/
     }
     /* the next allocation attempt had better fail */
     res = CORE_MemoryAllocate(&host_alloc, UNITS_MIN(MINIMUM_SIZE), 0, &b);
@@ -425,12 +425,12 @@ main
         b.BlockOffset   = (block_index) * UNITS_MIN(MINIMUM_SIZE);
         b.HostAddress   = (void*)(uintptr_t)(host_alloc_init.MemoryStart + b.BlockOffset);
         b.AllocatorType =  CORE_MEMORY_ALLOCATOR_TYPE_HOST;
-        CORE_MemoryFree(&host_alloc, &b);
-        DumpBlock(&b);
+        CORE_MemoryFreeHost(&host_alloc, b.HostAddress);
+        /*DumpBlock(&b);
         DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
         DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
         DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
-        ConsoleOutput("\n");
+        ConsoleOutput("\n");*/
     }
 
     ConsoleOutput("FINAL STATE\n");
@@ -439,14 +439,56 @@ main
     DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
     ConsoleOutput("\n");
 
-    /* a 16MB allocation should fail, because we only really have 14MB */
-    res = CORE_MemoryAllocate(&host_alloc, Megabytes(16), CORE_AlignOf(uint32_t), &b);
-    assert(res == -1 && "Memory allocation for 16MB succeeded when it should have failed");
-    /* a 14MB allocation should succeed, because we actually have that memory */
-    /*res = CORE_MemoryAllocate(&host_alloc, Megabytes(14), CORE_AlignOf(uint32_t), &b);
-    assert(res ==  0 && "Memory allocation failed when it should have succeeded");
-    assert((uint64_t) b.HostAddress == host_alloc_init.MemoryStart);
-    assert(b.BlockOffset == 0);*/
+    CORE_MemoryAllocatorReset(&host_alloc);
+
+    ConsoleOutput("RESET STATE\n");
+    DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
+    DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
+    DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
+    ConsoleOutput("\n");
+
+    /* test block demotion - a large block is demoted to a smaller block */
+    res = CORE_MemoryAllocate(&host_alloc, UNITS_MAX(MAXIMUM_SIZE)>>1, 0, &b);
+    assert(res == 0 && "Memory allocation failed when it should have succeeded");
+    ConsoleOutput("PRE-DEMOTION STATE\n");
+    DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
+    DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
+    DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
+    ConsoleOutput("\n");
+    res = CORE_MemoryReallocate(&host_alloc, &b, UNITS_MIN(MINIMUM_SIZE), 0, &b1);
+    assert(res == 0 && "Memory reallocation (demotion) failed when it should have succeeded");
+    assert(b1.BlockOffset == b.BlockOffset && "Demoted block changed offsets");
+    assert(b1.SizeInBytes == UNITS_MIN(MINIMUM_SIZE) && "Demoted block has unexpected size");
+    ConsoleOutput("POST-DEMOTION STATE\n");
+    DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
+    DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
+    DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
+    ConsoleOutput("\n");
+    /* test block promotion - a smaller block is promoted to a larger block */
+    res = CORE_MemoryReallocate(&host_alloc, &b1, (size_t)(b1.SizeInBytes * 2), 0, &b);
+    assert(res == 0 && "Memory reallocation (promotion) failed when it should have succeeded");
+    assert(b.SizeInBytes == b1.SizeInBytes * 2 && "Promoted block has unexpected size");
+    assert(b.BlockOffset == b1.BlockOffset && "Promoted block changed offsets"); /* though this may happen in some cases */
+    ConsoleOutput("POST-PROMOTION STATE\n");
+    DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
+    DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
+    DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
+    ConsoleOutput("\n");
+
+    /* free the allocated block */
+    CORE_MemoryFree(&host_alloc, &b);
+    ConsoleOutput("PRE-DOUBLE FREE STATE\n");
+    DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
+    DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
+    DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
+    ConsoleOutput("\n");
+    /* test a double-free */
+    CORE_MemoryFree(&host_alloc, &b);
+    ConsoleOutput("POST-DOUBLE FREE STATE\n");
+    DumpSplitIndex (host_alloc.LevelCount, host_alloc.SplitIndex , host_alloc.SplitIndexSize);
+    DumpStatusIndex(host_alloc.LevelCount, host_alloc.StatusIndex, host_alloc.StatusIndexSize);
+    DumpFreeCounts (host_alloc.FreeCount , host_alloc.LevelCount);
+    ConsoleOutput("\n");
 
     /* ... */
 
