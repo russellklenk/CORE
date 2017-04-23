@@ -296,6 +296,90 @@ extern "C" {
 }; /* extern "C" */
 #endif /* __cplusplus */
 
+/* @summary Calculate the amount of memory required to back an I/O request pool of the specified size.
+ * @param max_requests The maximum number of requests that can be allocated from the pool.
+ * @return The size, in bytes, required to create an I/O request pool of the specified size.
+ */
+CORE_API(size_t)
+CORE_QueryAsyncIoRequestPoolMemorySize
+(
+    size_t max_requests
+);
+
+/* @summary Create an I/O request pool.
+ * @param pool The CORE_ASYNCIO_REQUEST_POOL to initialize.
+ * @param init Data used to configure the request pool.
+ * @return Zero if the pool is created successfully, or -1 if an error occurred.
+ */
+CORE_API(int)
+CORE_InitIoRequestPool
+(
+    CORE_ASYNCIO_REQUEST_POOL      *pool, 
+    CORE_ASYNCIO_REQUEST_POOL_INIT *init
+);
+
+/* @summary Acquire an I/O request object from a pool.
+ * @param pool The I/O request pool from which the request object should be acquired.
+ * @return The I/O request object, or NULL if the pool has no available requests.
+ */
+CORE_API(CORE_ASYNCIO_REQUEST*)
+CORE_AcquireIoRequest
+(
+    CORE_ASYNCIO_REQUEST_POOL *pool
+);
+
+/* @summary Return an I/O request object to the pool it was acquired from.
+ * @param request The I/O request object to return.
+ */
+CORE_API(void)
+CORE_ReturnIoRequest
+(
+    CORE_ASYNCIO_REQUEST   *request
+);
+
+/* @summary Calculate the amount of memory required to launch an I/O thread pool with the specified number of worker threads.
+ * @param worker_count The number of worker threads in the pool.
+ * @return The number of bytes of memory required to launch an I/O thread pool with the specified number of workers.
+ */
+CORE_API(size_t)
+CORE_QueryAsyncIoThreadPoolMemorySize
+(
+    size_t worker_count
+);
+
+/* @summary Initialize and launch a pool of I/O worker threads.
+ * @param pool The CORE_ASYNCIO_THREAD_POOL to initialize.
+ * @param init Data used to configure the I/O thread pool.
+ * @return Zero if the pool is initialized and launched successfully, or -1 if an error occurred.
+ */
+CORE_API(int)
+CORE_LaunchIoThreadPool
+(
+    CORE_ASYNCIO_THREAD_POOL      *pool, 
+    CORE_ASYNCIO_THREAD_POOL_INIT *init
+);
+
+/* @summary Stop all threads in an I/O worker pool.
+ * @param pool The CORE_ASYNCIO_THREAD_POOL to terminate.
+ */
+CORE_API(void)
+CORE_TerminateIoThreadPool
+(
+    CORE_ASYNCIO_THREAD_POOL *pool
+);
+
+/* @summary Submit an asynchronous I/O request.
+ * @param pool The CORE_ASYNCIO_THREAD_POOL that will execute the request.
+ * @param request The I/O request to submit. Any data associated with the request must remain valid until the request completes.
+ * @return Zero if the request is submitted successfully, or -1 if an error occurred.
+ */
+CORE_API(int)
+CORE_SubmitIoRequest
+(
+    CORE_ASYNCIO_THREAD_POOL *pool, 
+    CORE_ASYNCIO_REQUEST  *request
+);
+
 #endif /* __CORE_ASYNCIO_H__ */
 
 #ifdef CORE_ASYNCIO_IMPLEMENTATION
