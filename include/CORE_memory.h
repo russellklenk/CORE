@@ -163,7 +163,7 @@ typedef uint32_t                          umword_t;
  */
 #ifndef CORE_AlignFor
 #define CORE_AlignFor(_address, _type)                                         \
-    ((void*)((((uint8_t*)(_address)) + ((__alignof(_type))-1)) & ~((__alignof(_type))-1)))
+    ((void*)(((uint8_t*)(_address)) + ((((__alignof(_type))-1)) & ~((__alignof(_type))-1))))
 #endif
 
 /* @summary For a given type, calculate the maximum number of bytes that will need to be allocated for an instance of that type, accounting for the padding required for proper alignment.
