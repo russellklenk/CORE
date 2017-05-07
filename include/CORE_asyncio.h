@@ -266,10 +266,6 @@ typedef enum _CORE_ASYNCIO_HINT_FLAGS {
 extern "C" {
 #endif /* __cplusplus */
 
-#ifdef __cplusplus
-}; /* extern "C" */
-#endif /* __cplusplus */
-
 /* @summary Calculate the amount of memory required to back an I/O request pool of the specified size.
  * @param max_requests The maximum number of requests that can be allocated from the pool.
  * @return The size, in bytes, required to create an I/O request pool of the specified size.
@@ -369,6 +365,10 @@ CORE_SubmitIoRequest
     CORE_ASYNCIO_THREAD_POOL *pool, 
     CORE_ASYNCIO_REQUEST  *request
 );
+
+#ifdef __cplusplus
+}; /* extern "C" */
+#endif /* __cplusplus */
 
 #endif /* __CORE_ASYNCIO_H__ */
 
