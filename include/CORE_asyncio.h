@@ -1,7 +1,5 @@
 /*
- * CORE_asyncio.h: A single-file library for performing asynchronous socket,  
- * HTTP and disk I/O (along with some convenience routines for performing 
- * memory-mapped I/O.)
+ * CORE_asyncio.h: A single-file library for performing asynchronous disk I/O.
  *
  * This software is dual-licensed to the public domain and under the following 
  * license: You are hereby granted a perpetual, irrevocable license to copy, 
@@ -29,18 +27,6 @@
  */
 #ifndef CORE_ASYNCIO_INVALID_FILE
 #define CORE_ASYNCIO_INVALID_FILE         INVALID_HANDLE_VALUE
-#endif
-
-/* @summary Define the value used to represent an invalid socket handle.
- */
-#ifndef CORE_ASYNCIO_INVALID_SOCKET
-#define CORE_ASYNCIO_INVALID_SOCKET       INVALID_SOCKET
-#endif
-
-/* @summary Define the value used to represent an invalid HTTP request handle.
- */
-#ifndef CORE_ASYNCIO_INVALID_HTTP
-#define CORE_ASYNCIO_INVALID_HTTP         NULL
 #endif
 
 /* @summary Retrieve the alignment of a particular type, in bytes.
@@ -71,8 +57,6 @@
 
 /* Forward-declare types exported by the library */
 union  _CORE_ASYNCIO_HANDLE;
-struct _CORE_FILE_MAPPING;
-struct _CORE_FILE_DATA;
 struct _CORE_ASYNCIO_RESULT;
 struct _CORE_ASYNCIO_REQUEST;
 struct _CORE_ASYNCIO_REQUEST_POOL;
@@ -113,8 +97,6 @@ typedef int (*CORE_AsyncIoWorkerThreadInit_Func)
 /* @summary Define a union for storing the different types of handles the async I/O system can work with.
  */
 typedef union _CORE_ASYNCIO_HANDLE {
-    HINTERNET                          HttpRequest;               /* The WinHTTP request handle. */
-    SOCKET                             Socket;                    /* The WinSock2 socket handle. */
     HANDLE                             File;                      /* The Win32 file handle. */
 } CORE_ASYNCIO_HANDLE;
 
@@ -127,13 +109,13 @@ typedef struct _CORE_FILE_MAPPING {
     uint64_t                           Granularity;               /* The system VMM allocation granularity, in bytes. */
 } CORE_FILE_MAPPING;
 
-/* @summary Define the data associated with a region of a file loaded or mapped into memory.
+/* @summary Define the data associated with a region of a file mapped into memory.
  */
-typedef struct _CORE_FILE_DATA {
-    void                              *MapPtr;                    /* The address returned by MapViewOfFile. */
+typedef struct _CORE_FILE_REGION {
+    uint8_t                           *MapPtr;                    /* The address returned by MapViewOfFile. */
     int64_t                            Offset;                    /* The offset of the data in this file data region from the start of the file. */
     int64_t                            DataSize;                  /* The number of bytes starting from MapPtr that are valid to access. */
-} CORE_FILE_DATA;
+} CORE_FILE_REGION;
 
 /* @summary Define the data returned from a background I/O request through the completion callback.
  * Enough data is returned that it is possible to return a chained I/O request to be executed immediately.
@@ -255,10 +237,6 @@ typedef enum _CORE_ASYNCIO_REQUEST_TYPE {
     CORE_ASYNCIO_REQUEST_TYPE_WRITE_FILE             =  3,        /* Issue an explicit asynchronous file write. */
     CORE_ASYNCIO_REQUEST_TYPE_FLUSH_FILE             =  4,        /* Issue an explicit asynchronous file flush. */
     CORE_ASYNCIO_REQUEST_TYPE_CLOSE_FILE             =  5,        /* Asynchronously close a file. */
-    CORE_ASYNCIO_REQUEST_TYPE_READ_STREAM_SOCKET     =  6,        /* */
-    CORE_ASYNCIO_REQUEST_TYPE_READ_DATAGRAM_SOCKET   =  7,        /* */
-    CORE_ASYNCIO_REQUEST_TYPE_WRITE_STREAM_SOCKET    =  8,        /* */
-    CORE_ASYNCIO_REQUEST_TYPE_WRITE_DATAGRAM_SOCKET  =  9,        /* */
 } CORE_ASYNCIO_REQUEST_TYPE;
 
 /* @summary Define the states of an asynchronous I/O request.
@@ -599,15 +577,6 @@ CORE__AsyncIoGetOverlappedResult
         BOOL r = GetOverlappedResult(request->Handle.File, overlapped, transferred, wait);
         *error = GetLastError();
         *flags = 0;
-        return r;
-    }
-    if (request->RequestType == CORE_ASYNCIO_REQUEST_TYPE_READ_STREAM_SOCKET   || 
-        request->RequestType == CORE_ASYNCIO_REQUEST_TYPE_READ_DATAGRAM_SOCKET || 
-        request->RequestType == CORE_ASYNCIO_REQUEST_TYPE_WRITE_STREAM_SOCKET  || 
-        request->RequestType == CORE_ASYNCIO_REQUEST_TYPE_WRITE_DATAGRAM_SOCKET)
-    {   /* we're working with a SOCKET - use WSAGetOverlappedResult */
-        BOOL r = WSAGetOverlappedResult(request->Handle.Socket, (WSAOVERLAPPED*) overlapped, transferred, wait, flags);
-        *error =(DWORD) WSAGetLastError();
         return r;
     }
     assert(false && "CORE__AsyncIoGetOverlappedResult called for request with invalid type");
@@ -1002,18 +971,6 @@ CORE__AsyncIoExecuteRequest
             } break;
         case CORE_ASYNCIO_REQUEST_TYPE_CLOSE_FILE:
             { completed_synchronously = CORE__AsyncIoExecuteCloseFileRequest(req, comp);
-            } break;
-        case CORE_ASYNCIO_REQUEST_TYPE_READ_STREAM_SOCKET:
-            {
-            } break;
-        case CORE_ASYNCIO_REQUEST_TYPE_READ_DATAGRAM_SOCKET:
-            {
-            } break;
-        case CORE_ASYNCIO_REQUEST_TYPE_WRITE_STREAM_SOCKET:
-            {
-            } break;
-        case CORE_ASYNCIO_REQUEST_TYPE_WRITE_DATAGRAM_SOCKET:
-            {
             } break;
         default:
             { /* unknown request type - treat as a no-op */
