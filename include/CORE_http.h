@@ -17,12 +17,6 @@
 #define CORE_API(_rt)                     extern _rt
 #endif
 
-/* @summary Define the maximum length of the user agent string, in characters, and including the trailing nul.
- */
-#ifndef CORE_HTTP_MAX_USER_AGENT
-#define CORE_HTTP_MAX_USER_AGENT          64
-#endif
-
 /* @summary Retrieve the alignment of a particular type, in bytes.
  * @param _type A typename, such as int, specifying the type whose alignment is to be retrieved.
  */
