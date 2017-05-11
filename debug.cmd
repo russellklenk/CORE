@@ -12,13 +12,14 @@ IF [%INCLUDESDIR%] EQU [] (
 IF [%1] EQU [] GOTO Default_Arguments
 IF /I "%1" == "client" SET TARGET_OUTPUT=%CORE_TEST_CLIENT_OUTPUT%
 IF /I "%1" == "memtest" SET TARGET_OUTPUT=%CORE_MEMTEST_OUTPUT%
+IF /I "%1" == "httptest" SET TARGET_OUTPUT=%CORE_HTTP_TEST_OUTPUT%
 SHIFT
 GOTO Process_Argument
 
 :: Default any unspecified command-line arguments.
 :Default_Arguments
 IF [%TARGET_OUTPUT%] EQU [] (
-    ECHO No target specified; expected "client" or "memtest". Aborting debug session.
+    ECHO No target specified; expected "client", "memtest" or "httptest". Aborting debug session.
     GOTO Abort_Debug
 )
 IF NOT EXIST "%OUTPUTDIR%" (
