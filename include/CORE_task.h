@@ -1,5 +1,6 @@
 /*
  * CORE_task.h: A single-file library for executing compute tasks on a thread pool.
+ * This module is only available for x86-64 platforms.
  *
  * This software is dual-licensed to the public domain and under the following 
  * license: You are hereby granted a perpetual, irrevocable license to copy, 
@@ -8,6 +9,10 @@
  */
 #ifndef __CORE_TASK_H__
 #define __CORE_TASK_H__
+
+#if !defined(_M_X64) && !defined(_M_AMD64)
+    #error The CORE_task module supports 64-bit builds only due to requiring 64-bit atomic support.
+#endif
 
 /* @summary #define CORE_TASK_NO_PROFILER to disable built-in Concurrency Visualizer SDK support.
  */
@@ -27,23 +32,16 @@ struct _CV_MARKERSERIES;
 #define CORE_API(_rt)                     extern _rt
 #endif
 
-/* @summary Define the size of a pointer, in bytes, on the target platform.
+/* @summary Define the size of a pointer, in bytes, on the target platform. Only 64-bit platforms are supported.
  */
 #ifndef CORE_TASK_POINTER_SIZE
-#ifdef _M_X64
 #define CORE_TASK_POINTER_SIZE            8
-#endif
-#ifdef _M_X86
-#define CORE_TASK_POINTER_SIZE            4
-#endif
 #endif
 
 /* @summary Define the size of a single cacheline on the runtime target platform.
  */
 #ifndef CORE_TASK_L1_CACHELINE_SIZE
 #define CORE_TASK_L1_CACHELINE_SIZE       64
-#define CORE_TASK_QUEUE_PAD_01           (CORE_TASK_L1_CACHELINE_SIZE-8)
-#define CORE_TASK_QUEUE_PAD_2            (CORE_TASK_L1_CACHELINE_SIZE-8-CORE_TASK_POINTER_SIZE)
 #endif
 
 /* @summary Indicate that a type or field should be aligned to a cacheline boundary.
@@ -91,7 +89,7 @@ struct _CV_MARKERSERIES;
 /* @summary Align a non-zero size up to the nearest even multiple of a given power-of-two.
  * @param _quantity is the size value to align up.
  * @param _alignment is the desired power-of-two alignment.
- */
+ t wi*/
 #ifndef CORE_AlignUp
 #define CORE_AlignUp(_quantity, _alignment)                                    \
     (((_quantity) + ((_alignment)-1)) & ~((_alignment)-1))
@@ -249,21 +247,6 @@ typedef struct _CORE_TASK_PROFILER_SPAN {
 /* @summary Define the data associated with a double-ended queue of ready-to-run task identifiers.
  * The thread that owns the queue can perform push and take operations; other threads can only perform steal operations.
  */
-#define PAD0   CORE_TASK_QUEUE_PAD_01
-#define PAD1   CORE_TASK_QUEUE_PAD_01
-#define PAD2   CORE_TASK_QUEUE_PAD_2
-typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_QUEUE {
-    int64_t                          Public;                /* The public end of the deque, updated by steal operations. */
-    uint8_t                          Pad0[PAD0];            /* Padding separating the public and private ends of the deque. */
-    int64_t                          Private;               /* The private end of the deque, updated by push and take operations. */
-    uint8_t                          Pad1[PAD1];            /* Padding separating the private and shared data. */
-    int64_t                          Mask;                  /* The mask value used to map the Public and Private indices into the storage array. */
-    CORE_TASK_ID                    *TaskIds;               /* The identifiers of the ready-to-run tasks in the queue. */
-    uint8_t                          Pad2[PAD2];            /* Padding separating task queue instances. */
-} CORE_TASK_QUEUE;
-#undef PAD2
-#undef PAD1
-#undef PAD0
 
 /* @summary Define the data tracked internally for each task. Aligned to and limited to one cacheline.
  */
@@ -281,78 +264,10 @@ typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_DATA {
     #undef  NUM_DATA
 } CORE_TASK_DATA;
 
-// Multiple threads can concurrently write to the free set.
-// Items are not returned to the free set in any particular order.
-// Only one thread can take from the free set.
-// Take and Return can happen concurrently.
-// Ideally, we do not want Take and Return to access the same cacheline (bucket).
-// Within a single 32-bit word, a set bit indicates a free slot, while a clear bit indicates a used slot.
-// Return only ever sets bits; take only ever clears bits.
-// There are a maximum of 65536 tasks, which is 2048 32-bit words, which is 128 cacheline-sized buckets
-// -or-                   32768 tasks, which is 1024 32-bit words, which is 64 cacheline-sized buckets
-// -or-                   16384 tasks, which is 512 32-bit words, which is 32 cacheline-sized buckets
-// -or-                   8192 tasks, which is 256 32-bit words, which is 16 cacheline-sized buckets
-// -or-                   4096 tasks, which is 128 32-bit words, which is 8 cacheline-sized buckets
-// -or-                   2048 tasks, which is 64 32-bit words, which is 4 cacheline-sized buckets
-// -or-                   1024 tasks, which is 32 32-bit words, which is 2 cacheline-sized buckets
-// -or-                   512 tasks, which is 16 32-bit words, which is 1 cacheline-sized bucket
-// We should probably have a minimum of 512 tasks per-pool, which is 32KB of task data.
-// One bit vector is maintained (which is 8KB).
-// Each bucket (128 max) has a FreeCount which is modified atomically.
-// The pool itself (or the free list, take your pick) maintains a fusem with initial count = MaxTaskCount.
-//   This nicely solves the "no tasks available" problem; the thread must stall until tasks complete.
-//   https://github.com/cdwfs/cds_sync/blob/master/cds_sync.h
-// Once the thread has claimed items from the semaphore, it knows that there are *at least* that many free IDs.
-// It then begins claiming task IDs, aiming to minimize the number of atomic operations/fences:
-// int bucket_index = 0;
-// int num_free = 0;
-// do {
-//     /* find a bucket with free items */
-//     while (bucket_index < bucket_count)
-//     {
-//         num_free = BucketFreeCount[bucket_index];
-//         if (num_free > 0)
-//         {
-//           break;
-//         }
-//         bucket_index++;
-//     }
-//     /* claim as many slots as possible, up to num_ids_to_claim */
-//     int claimed = min(num_free, num_ids_to_claim);
-//     InterlockedAdd(&BucketFreeCount[bucket_index], -claimed);
-//     num_ids_to_claim -= claimed;
-//     /* mark indices as being in-use, one at a time.
-//      * other threads could be concurrently setting additional bits within these words. */
-//     int32_t   slot_index = bucket_index * 512; /* 32 bits per-word, 16 words per-bucket */
-//     int32_t *bucket_word = &StatusBits[bucket_index * 16]; /* 16 32-bit words per-bucket */
-//     do {
-//         int32_t       word = *bucket_word;
-//         int32_t      clear = 0;
-//         while (_BitScanForward(word, &bit_index))
-//         { /* claim slot bit_index */
-//           id_list[num_ids++] = slot_index + bit_index;
-//           clear |= (1 << bit_index);
-//           word &= ~(1 << bit_index);
-//           claimed--;
-//         }
-//         if (clear != 0)
-//         {
-//             _InterlockedAnd(bucket_word, ~clear); /* clear claimed bits */
-//         }
-//         slot_index += 32;
-//         bucket_word++;
-//         word = *bucket_word;
-//     } while (claimed > 0);
-// } while (num_ids_to_claim > 0);
-// need to figure out where to put fences instead of _Interlocked*.
-typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_POOL_FREE_LIST {
-    uint16_t                        *FreeIndices;
-    int32_t                          IndexMask;
-} CORE_TASK_POOL_FREE_LIST;
-
 /* @summary Define the data associated with a pre-allocated, fixed-size pool of tasks.
  * Each task pool is associated with a single thread that submits and optionally executes tasks.
  */
+#if 0
 typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_POOL {
     uint16_t                        *TaskFreeList;          /* An array of indices of free task slots. */
     uint32_t                         IndexMask;             /* A mask value used to map a task index value into the task data arrays. This is the array size minus one. */
@@ -370,6 +285,7 @@ typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_POOL {
     struct _CORE_TASK_POOL          *NextFreePool;          /* A pointer to the next free pool in the free list, or NULL if this pool is currently allocated. */
     CORE_TASK_QUEUE                  WorkQueue;             /* The work-stealing deque of task IDs that are ready-to-run. */
 } CORE_TASK_POOL;
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -391,30 +307,42 @@ extern "C" {
 
 /* @summary Define the amount of padding, in bytes, separating the enqueue or dequeue index from adjacent data in an MPMC bounded queue.
  */
-#ifndef CORE__TASK_MPMC_QUEUE_PADDING_SIZE_INDEX
-#define CORE__TASK_MPMC_QUEUE_PADDING_SIZE_INDEX     (CORE_TASK_L1_CACHELINE_SIZE-sizeof(int32_t))
+#ifndef CORE__TASK_FREE_QUEUE_PADDING_SIZE_INDEX
+#define CORE__TASK_FREE_QUEUE_PADDING_SIZE_INDEX     (CORE_TASK_L1_CACHELINE_SIZE-sizeof(uint32_t))
 #endif
 
 /* @summary Define the amount of padding, in bytes, separating the shared data from adjacent data in an MPMC bounded queue.
  */
-#ifndef CORE__TASK_MPMC_QUEUE_PADDING_SIZE_SHARED
-#define CORE__TASK_MPMC_QUEUE_PADDING_SIZE_SHARED    (CORE_TASK_L1_CACHELINE_SIZE-sizeof(int32_t)-CORE_TASK_POINTER_SIZE)
+#ifndef CORE__TASK_FREE_QUEUE_PADDING_SIZE_SHARED
+#define CORE__TASK_FREE_QUEUE_PADDING_SIZE_SHARED    (CORE_TASK_L1_CACHELINE_SIZE-sizeof(void*)-sizeof(uint32_t)-sizeof(uint32_t)-sizeof(void*)-sizeof(size_t))
+#endif
+
+/* @summary Define the amount of padding, in bytes, separating the enqueue or dequeue index from adjacent data in an bounded ready-to-run task queue.
+ */
+#ifndef CORE__TASK_WORK_QUEUE_PADDING_SIZE_INDEX
+#define CORE__TASK_WORK_QUEUE_PADDING_SIZE_INDEX     (CORE_TASK_L1_CACHELINE_SIZE-sizeof(int64_t))
+#endif
+
+/* @summary Define the amount of padding, in bytes, separating the shared data from adjacent data in an bounded ready-to-run task queue.
+ */
+#ifndef CORE__TASK_WORK_QUEUE_PADDING_SIZE_SHARED
+#define CORE__TASK_WORK_QUEUE_PADDING_SIZE_SHARED    (CORE_TASK_L1_CACHELINE_SIZE-sizeof(void*)-sizeof(uint32_t)-sizeof(uint32_t)-sizeof(void*)-sizeof(size_t))
 #endif
 
 /* @summary Define the data associated with a single item in an MPMC concurrent queue.
  * These items store the zero-based index of a free task slot within the task pool.
  */
-typedef struct _CORE__TASK_MPMC_CELL {
+typedef struct _CORE__TASK_FREE_CELL {
     uint32_t                              Sequence;          /* The sequence number assigned to the cell. */
-    uint32_t                              Value;             /* The value stored in the cell. This is the zero-based index of an available task slot. */
-} CORE__TASK_MPMC_CELL;
+    uint32_t                              TaskIndex;         /* The value stored in the cell. This is the zero-based index of an available task slot. */
+} CORE__TASK_FREE_CELL;
 
 /* @summary Define the data associated with a semaphore guaranteed to stay in userspace unless a thread needs to be downed or woken.
  */
 typedef struct CORE_TASK_CACHELINE_ALIGN _CORE__TASK_SEMAPHORE {
     #define PAD_SIZE                      CORE__TASK_SEMAPHORE_PADDING_SIZE
-    int32_t                               Count;             /* The current count. */
     HANDLE                                Semaphore;         /* The operating system semaphore object. */
+    int32_t                               Count;             /* The current count. */
     uint8_t                               Pad[PAD_SIZE];     /* Padding out to a cacheline boundary. */
     #undef  PAD_SIZE
 } CORE__TASK_SEMAPHORE;
@@ -426,12 +354,15 @@ typedef struct CORE_TASK_CACHELINE_ALIGN _CORE__TASK_SEMAPHORE {
  * The queue implementation (C++) is originally by Dmitry Vyukov and is available here:
  * http://www.1024cores.net/home/lock-free-algorithms/queues/bounded-mpmc-queue
  */
-typedef struct CORE_TASK_CACHELINE_ALIGN _CORE__TASK_MPMC_QUEUE {
-    #define PAD_SHARED                    CORE__TASK_MPMC_QUEUE_PADDING_SIZE_SHARED
-    #define PAD_ENQUEUE                   CORE__TASK_MPMC_QUEUE_PADDING_SIZE_INDEX
-    #define PAD_DEQUEUE                   CORE__TASK_MPMC_QUEUE_PADDING_SIZE_INDEX
-    CORE__TASK_MPMC_CELL                 *Storage;           /* Storage for queue items. Fixed-size, power-of-two. */
+typedef struct CORE_TASK_CACHELINE_ALIGN _CORE__TASK_FREE_QUEUE {
+    #define PAD_SHARED                    CORE__TASK_FREE_QUEUE_PADDING_SIZE_SHARED
+    #define PAD_ENQUEUE                   CORE__TASK_FREE_QUEUE_PADDING_SIZE_INDEX
+    #define PAD_DEQUEUE                   CORE__TASK_FREE_QUEUE_PADDING_SIZE_INDEX
+    CORE__TASK_FREE_CELL                 *Storage;           /* Storage for queue items. Fixed-size, power-of-two capacity. */
     uint32_t                              StorageMask;       /* The mask used to map EnqueuePos and DequeuePos into the storage array. */
+    uint32_t                              Capacity;          /* The maximum number of items that can be stored in the queue. */
+    void                                 *MemoryStart;       /* The pointer to the start of the allocated memory block. */
+    size_t                                MemorySize;        /* The size of the allocated memory block, in bytes. */
     uint8_t                               Pad0[PAD_SHARED];  /* Padding separating shared data from producer-only data. */
     uint32_t                              EnqueuePos;        /* A monotonically-increasing integer representing the position of the next enqueue operation. */
     uint8_t                               Pad1[PAD_ENQUEUE]; /* Padding separating the producer-only data from the consumer-only data. */
@@ -440,7 +371,32 @@ typedef struct CORE_TASK_CACHELINE_ALIGN _CORE__TASK_MPMC_QUEUE {
     #undef  PAD_SHARED
     #undef  PAD_ENQUEUE
     #undef  PAD_DEQUEUE
-} CORE__TASK_MPMC_QUEUE;
+} CORE__TASK_FREE_QUEUE;
+
+/* @summary Define the data associated with a fixed-size double-ended concurrent queue. The deque capacity must be a power-of-two.
+ * The deque stores ready-to-run task identifiers. It supports operations Push, Take and Steal. Push and Take operate in a LIFO manner, while Steal operates in a FIFO manner.
+ * The thread that owns the deque (and task pool) can perform Push and Take operations. Other threads may perform Steal operations.
+ * The PublicPos and PrivatePos are 64-bit values to avoid overflow over any reasonable time period (1000+ years assuming 1M tasks/tick at 240Hz.) Otherwise, they must be periodically reset to zero. 
+ * The deque capacity matches the task pool capacity.
+ */
+typedef struct CORE_TASK_CACHELINE_ALIGN _CORE__TASK_WORK_QUEUE {
+    #define PAD_SHARED                    CORE__TASK_WORK_QUEUE_PADDING_SIZE_SHARED
+    #define PAD_PUBLIC                    CORE__TASK_WORK_QUEUE_PADDING_SIZE_INDEX
+    #define PAD_PRIVATE                   CORE__TASK_WORK_QUEUE_PADDING_SIZE_INDEX
+    CORE_TASK_ID                         *Storage;           /* Storage for queue items (ready-to-run task identifiers.) Fixed-size, power-of-two capacity. */
+    uint32_t                              StorageMask;       /* The mask used to map PublicPos and PrivatePos into the storage array. */
+    uint32_t                              Capacity;          /* The maximum number of items that can be stored in the queue. */
+    void                                 *MemoryStart;       /* The pointer to the start of the allocated memory block. */
+    size_t                                MemorySize;        /* The size of the allocated memory block, in bytes. */
+    uint8_t                               Pad0[PAD_SHARED];  /* Padding separating shared data from the public-only end of the queue. */
+    int64_t                               PublicPos;         /* A monotonically-increasing integer representing the public end of the dequeue, updated by Steal operations. */
+    uint8_t                               Pad1[PAD_PUBLIC];  /* Padding separating the public-only data from the private-only data. */
+    int64_t                               PrivatePos;        /* A monotonically-increasing integer representing the private end of the dequeue, updated by Push and Take operations. */
+    uint8_t                               Pad2[PAD_PRIVATE]; /* Padding separating the private-only data from adjacent data. */
+    #undef  PAD_SHARED
+    #undef  PAD_PUBLIC
+    #undef  PAD_PRIVATE
+} CORE__TASK_WORK_QUEUE;
 
 /* @summary Define the supported memory ordering constraints for atomic operations.
  */
@@ -453,7 +409,7 @@ typedef enum _CORE__TASK_ATOMIC_ORDERING {
 } CORE__TASK_ATOMIC_ORDERING;
 
 /* @summary Atomically load a 32-bit value from a memory location.
- * @param address The memory location to read.
+ * @param address The memory location to read. This address must be 32-bit aligned.
  * @param order One of CORE__TASK_ATOMIC_ORDERING specifying the memory ordering constraint.
  * @return The 32-bit value stored at the specified memory location.
  */
@@ -461,10 +417,11 @@ static int32_t
 CORE__TaskAtomicLoad_s32
 (
     int32_t *address, 
-    int    /*order*/
+    int        order
 )
 {   /* on x86 and x86-64 loads of aligned 32-bit values are atomic */
     int32_t v;
+    assert((((uintptr_t) address) & 3) == 0 && "address must have 32-bit alignment");
     switch (order)
     {
         case CORE__TASK_ATOMIC_ORDERING_RELAXED:
@@ -474,7 +431,7 @@ CORE__TaskAtomicLoad_s32
               _ReadWriteBarrier();
             } break;
         default:
-            { assert(false && "Unsupported memory ordering on load");
+            { assert(false && "unsupported memory ordering constraint on load");
               v = *address;
               _ReadWriteBarrier();
             } break;
@@ -483,7 +440,7 @@ CORE__TaskAtomicLoad_s32
 }
 
 /* @summary Atomically load a 32-bit value from a memory location.
- * @param address The memory location to read.
+ * @param address The memory location to read. This address must be 32-bit aligned.
  * @param order One of CORE__TASK_ATOMIC_ORDERING specifying the memory ordering constraint.
  * @return The 32-bit value stored at the specified memory location.
  */
@@ -491,10 +448,11 @@ static uint32_t
 CORE__TaskAtomicLoad_u32
 (
     uint32_t *address, 
-    int     /*order*/
+    int         order
 )
 {   /* on x86 and x86-64 loads of aligned 32-bit values are atomic */
     uint32_t v;
+    assert((((uintptr_t) address) & 3) == 0 && "address must have 32-bit alignment");
     switch (order)
     {
         case CORE__TASK_ATOMIC_ORDERING_RELAXED:
@@ -504,7 +462,38 @@ CORE__TaskAtomicLoad_u32
               _ReadWriteBarrier();
             } break;
         default:
-            { assert(false && "Unsupported memory ordering on load");
+            { assert(false && "unsupported memory ordering constraint on load");
+              v = *address;
+              _ReadWriteBarrier();
+            } break;
+    }
+    return v;
+}
+
+/* @summary Atomically load a 64-bit value from a memory location.
+ * @param address The memory location to read. This address must be 64-bit aligned.
+ * @param order One of CORE__TASK_ATOMIC_ORDERING specifying the memory ordering constraint.
+ * @return The 64-bit value stored at the specified memory location.
+ */
+static int64_t
+CORE__TaskAtomicLoad_s64
+(
+    int64_t *address, 
+    int        order
+)
+{   /* on x86-64 loads of aligned 64-bit values are atomic */
+    int64_t v;
+    assert((((uintptr_t) address) & 7) == 0 && "address must have 64-bit alignment");
+    switch (order)
+    {
+        case CORE__TASK_ATOMIC_ORDERING_RELAXED:
+        case CORE__TASK_ATOMIC_ORDERING_ACQUIRE:
+        case CORE__TASK_ATOMIC_ORDERING_SEQ_CST:
+            { v = *address;
+              _ReadWriteBarrier();
+            } break;
+        default:
+            { assert(false && "unsupported memory ordering constraint on load");
               v = *address;
               _ReadWriteBarrier();
             } break;
@@ -513,7 +502,7 @@ CORE__TaskAtomicLoad_u32
 }
 
 /* @summary Atomically store a 32-bit value to a memory location.
- * @param address The memory location to write.
+ * @param address The memory location to write. This address must be 32-bit aligned.
  * @param value The value to write to the specified memory location.
  * @param order One of CORE__TASK_ATOMIC_ORDERING specifying the memory ordering constraint.
  */
@@ -525,6 +514,7 @@ CORE__TaskAtomicStore_s32
     int        order
 )
 {   /* on x86 and x86-64 stores of aligned 32-bit values are atomic */
+    assert((((uintptr_t) address) & 3) == 0 && "address must be 32-bit aligned");
     switch (order)
     {
         case CORE__TASK_ATOMIC_ORDERING_RELAXED:
@@ -536,7 +526,7 @@ CORE__TaskAtomicStore_s32
             { _InterlockedExchange((volatile LONG*) address, value);
             } break;
         default:
-            { assert(false && "Unsupported memory ordering constraint on store");
+            { assert(false && "unsupported memory ordering constraint on store");
               _ReadWriteBarrier();
               *address = value;
             } break;
@@ -544,7 +534,7 @@ CORE__TaskAtomicStore_s32
 }
 
 /* @summary Atomically store a 32-bit value to a memory location.
- * @param address The memory location to write.
+ * @param address The memory location to write. This address must be 32-bit aligned.
  * @param value The value to write to the specified memory location.
  * @param order One of CORE__TASK_ATOMIC_ORDERING specifying the memory ordering constraint.
  */
@@ -556,6 +546,7 @@ CORE__TaskAtomicStore_u32
     int         order
 )
 {   /* on x86 and x86-64 stores of aligned 32-bit values are atomic */
+    assert((((uintptr_t) address) & 3) == 0 && "address must be 32-bit aligned");
     switch (order)
     {
         case CORE__TASK_ATOMIC_ORDERING_RELAXED:
@@ -567,7 +558,39 @@ CORE__TaskAtomicStore_u32
             { _InterlockedExchange((volatile LONG*) address, (LONG) value);
             } break;
         default:
-            { assert(false && "Unsupported memory ordering constraint on store");
+            { assert(false && "unsupported memory ordering constraint on store");
+              _ReadWriteBarrier();
+              *address = value;
+            } break;
+    }
+}
+
+/* @summary Atomically store a 64-bit value to a memory location.
+ * @param address The memory location to write. This address must be 64-bit aligned.
+ * @param value The value to write to the specified memory location.
+ * @param order One of CORE__TASK_ATOMIC_ORDERING specifying the memory ordering constraint.
+ */
+static void
+CORE__TaskAtomicStore_s64
+(
+    int64_t *address, 
+    int64_t    value, 
+    int        order
+)
+{   /* on x86-64 stores of aligned 64-bit values are atomic */
+    assert((((uintptr_t) address) & 7) == 0 && "address must be 64-bit aligned");
+    switch (order)
+    {
+        case CORE__TASK_ATOMIC_ORDERING_RELAXED:
+        case CORE__TASK_ATOMIC_ORDERING_RELEASE:
+            { _ReadWriteBarrier();
+              *address = value;
+            } break;
+        case CORE__TASK_ATOMIC_ORDERING_SEQ_CST:
+            { _InterlockedExchange64((volatile LONGLONG*) address, value);
+            } break;
+        default:
+            { assert(false && "unsupported memory ordering constraint on store");
               _ReadWriteBarrier();
               *address = value;
             } break;
@@ -587,6 +610,7 @@ CORE__TaskAtomicFetchAdd_s32
     int32_t    value, 
     int        order
 )
+{   assert((((uintptr_t) address) & 3) == 0 && "address must be 32-bit aligned");
     UNREFERENCED_PARAMETER(order);
     return _InterlockedExchangeAdd((volatile LONG*) address, value);
 }
@@ -604,15 +628,34 @@ CORE__TaskAtomicFetchAdd_u32
     uint32_t    value, 
     int         order
 )
+{   assert((((uintptr_t) address) & 3) == 0 && "address must be 32-bit aligned");
     UNREFERENCED_PARAMETER(order);
-    return _InterlockedExchangeAdd((volatile LONG*) address, (LONG) value);
+    return (uint32_t) _InterlockedExchangeAdd((volatile LONG*) address, (LONG) value);
+}
+
+/* @summary Load a 64-bit value from a memory location, add a value to it, and store the updated value back to the memory location as an atomic operation.
+ * @param address The memory location containing the current value. This must be a 64-bit aligned address.
+ * @param value The value to add (if positive) or subtract (if negative) from the value stored at address.
+ * @param order One of CORE__TASK_ATOMIC_ORDERING specifying the memory ordering constraint. CORE__TASK_ATOMIC_ORDERING_RELEASE not supported.
+ * @return The value initially stored at the memory location.
+ */
+static int64_t
+CORE__TaskAtomicFetchAdd_s64
+(
+    int64_t *address, 
+    int64_t    value, 
+    int        order
+)
+{   assert((((uintptr_t) address) & 7) == 0 && "address must be 64-bit aligned");
+    UNREFERENCED_PARAMETER(order);
+    return _InterlockedExchangeAdd64((volatile LONGLONG*) address, value);
 }
 
 /* @summary Load a 32-bit value from a memory location, compare it with an expected value, and if they match, store a new value in the memory location as a single atomic operation.
  * @param address The memory location to load and potentially update. The address must be 32-bit aligned.
  * @param expected A memory location containing the expected value. On return, this memory location contains the original value stored at address.
  * @param desired The value that will be stored to the memory location if the current value matches the expected value.
- * @param weak Specify non-zero to ...
+ * @param weak Specify non-zero to perform a weak compare-exchange, which may sometimes fail even if *address == *expected, but may perform better.
  * @param order_success One of CORE__TASK_ATOMIC_ORDERING specifying the memory ordering constraint to apply if the CAS operation is successful.
  * @param order_failure One of CORE__TASK_ATOMIC_ORDERING specifying the memory ordering constraint to apply if the CAS operation fails.
  * @return Non-zero if the value stored at address matched the expected value and was updated to desired, or zero if the value stored at address did not match the expected value.
@@ -634,6 +677,7 @@ CORE__TaskAtomicCompareAndSwap_s32
     UNREFERENCED_PARAMETER(weak);
     UNREFERENCED_PARAMETER(order_failure);
     UNREFERENCED_PARAMETER(order_success);
+    assert((((uintptr_t) address) & 3) == 0 && "address must be 32-bit aligned");
     original = _InterlockedCompareExchange((volatile LONG*) address, desired, ex);
     success  = (original == ex) ? 1 : 0;
    *expected =  original;
@@ -644,7 +688,7 @@ CORE__TaskAtomicCompareAndSwap_s32
  * @param address The memory location to load and potentially update. The address must be 32-bit aligned.
  * @param expected A memory location containing the expected value. On return, this memory location contains the original value stored at address.
  * @param desired The value that will be stored to the memory location if the current value matches the expected value.
- * @param weak Specify non-zero to ...
+ * @param weak Specify non-zero to perform a weak compare-exchange, which may sometimes fail even if *address == *expected, but may perform better.
  * @param order_success One of CORE__TASK_ATOMIC_ORDERING specifying the memory ordering constraint to apply if the CAS operation is successful.
  * @param order_failure One of CORE__TASK_ATOMIC_ORDERING specifying the memory ordering constraint to apply if the CAS operation fails.
  * @return Non-zero if the value stored at address matched the expected value and was updated to desired, or zero if the value stored at address did not match the expected value.
@@ -666,7 +710,41 @@ CORE__TaskAtomicCompareAndSwap_u32
     UNREFERENCED_PARAMETER(weak);
     UNREFERENCED_PARAMETER(order_failure);
     UNREFERENCED_PARAMETER(order_success);
+    assert((((uintptr_t) address) & 3) == 0 && "address must be 32-bit aligned");
     original = (uint32_t) _InterlockedCompareExchange((volatile LONG*) address, (LONG) desired, (LONG) ex);
+    success  = (original == ex) ? 1 : 0;
+   *expected =  original;
+    return success;
+}
+
+/* @summary Load a 64-bit value from a memory location, compare it with an expected value, and if they match, store a new value in the memory location as a single atomic operation.
+ * @param address The memory location to load and potentially update. The address must be 64-bit aligned.
+ * @param expected A memory location containing the expected value. On return, this memory location contains the original value stored at address.
+ * @param desired The value that will be stored to the memory location if the current value matches the expected value.
+ * @param weak Specify non-zero to perform a weak compare-exchange, which may sometimes fail even if *address == *expected, but may perform better.
+ * @param order_success One of CORE__TASK_ATOMIC_ORDERING specifying the memory ordering constraint to apply if the CAS operation is successful.
+ * @param order_failure One of CORE__TASK_ATOMIC_ORDERING specifying the memory ordering constraint to apply if the CAS operation fails.
+ * @return Non-zero if the value stored at address matched the expected value and was updated to desired, or zero if the value stored at address did not match the expected value.
+ */
+static int
+CORE__TaskAtomicCompareAndSwap_s64
+(
+    int64_t  *address, 
+    int64_t *expected, 
+    int64_t   desired, 
+    int          weak, 
+    int order_success, 
+    int order_failure
+)
+{
+    int      success;
+    int64_t original;
+    int64_t      ex = *expected;
+    UNREFERENCED_PARAMETER(weak);
+    UNREFERENCED_PARAMETER(order_failure);
+    UNREFERENCED_PARAMETER(order_success);
+    assert((((uintptr_t) address) & 7) == 0 && "address must be 64-bit aligned");
+    original = _InterlockedCompareExchange64((volatile LONGLONG*) address, desired, ex);
     success  = (original == ex) ? 1 : 0;
    *expected =  original;
     return success;
@@ -684,9 +762,9 @@ CORE__TaskCreateSemaphore
     int32_t             count
 )
 {
-    sem->Count = count;
     if ((sem->Semaphore = CreateSemaphore(NULL, 0, LONG_MAX, NULL)) != NULL)
     {   /* the semaphore is successfully initialized */
+        sem->Count = count;
         return  0;
     }
     else
@@ -806,27 +884,31 @@ CORE__TaskSemaphorePostCount
     }
 }
 
+/* @summary Calculate the amount of memory required for an MPMC concurrent queue of available task slot indices of a given capacity.
+ * @param capacity The capacity of the queue. This value must be a power-of-two greater than 2.
+ * @return The minimum number of bytes required to successfully initialize a queue with the specified capacity.
+ */
 static size_t
-CORE__QueryTaskMPMCQueueMemorySize
+CORE__QueryTaskFreeQueueMemorySize
 (
     uint32_t capacity
 )
 {   assert(capacity >= 2); /* minimum capacity is 2 */
     assert((capacity & (capacity-1)) == 0); /* must be a power-of-two */
-    return (capacity * sizeof(CORE__TASK_MPMC_CELL));
+    return (capacity * sizeof(CORE__TASK_FREE_CELL));
 }
 
-/* @summary Initialize a multi-producer, multi-consumer concurrent queue.
+/* @summary Initialize a multi-producer, multi-consumer concurrent queue of available task slot indices.
  * @param fifo The MPMC queue object to initialize.
  * @param capacity The capacity of the queue. This value must be a power-of-two greater than 2.
  * @param memory The memory block to use for the queue storage.
- * @param memory_size The size of the memory block to use for the queue storage. This value must be at least the size returned by CORE__QueryTaskMPMCQueueMemorySize(capacity).
+ * @param memory_size The size of the memory block to use for the queue storage. This value must be at least the size returned by CORE__QueryTaskFreeQueueMemorySize(capacity).
  * @return Zero if the queue is successfully initialized, or non-zero if an error occurred.
  */
 static int
-CORE__InitTaskMPMCQueue
+CORE__InitTaskFreeQueue
 (
-    CORE__TASK_MPMC_QUEUE *fifo,
+    CORE__TASK_FREE_QUEUE *fifo,
     uint32_t           capacity, 
     void                *memory, 
     size_t          memory_size
@@ -837,58 +919,61 @@ CORE__InitTaskMPMCQueue
     if (capacity < 2)
     {   /* the minimum supported capacity is two elements */
         assert(capacity >= 2);
-        ZeroMemory(fifo, sizeof(CORE__TASK_MPMC_QUEUE));
+        ZeroMemory(fifo, sizeof(CORE__TASK_FREE_QUEUE));
         return -1;
     }
     if ((capacity & (capacity-1)) != 0)
     {   /* the capacity must be a power-of-two */
         assert((capacity & (capacity-1)) == 0);
-        ZeroMemory(fifo, sizeof(CORE__TASK_MPMC_QUEUE));
+        ZeroMemory(fifo, sizeof(CORE__TASK_FREE_QUEUE));
         return -1;
     }
-    if (memory_size < (capacity * sizeof(CORE__TASK_MPMC_CELL)))
+    if (memory_size < (capacity * sizeof(CORE__TASK_FREE_CELL)))
     {   /* the caller did not supply enough memory */
-        assert(memory_size >= (capacity * sizeof(CORE__TASK_MPMC_CELL)));
-        ZeroMemory(fifo, sizeof(CORE__TASK_MPMC_QUEUE));
+        assert(memory_size >= (capacity * sizeof(CORE__TASK_FREE_CELL)));
+        ZeroMemory(fifo, sizeof(CORE__TASK_FREE_QUEUE));
         return -1;
     }
 
-    ZeroMemory(fifo, sizeof(CORE__TASK_MPMC_QUEUE));
-    fifo->Storage     = (CORE__TASK_MPMC_CELL*) memory;
-    fifo->StorageMask = (uint32_t)(capacity - 1);
+    ZeroMemory(fifo, sizeof(CORE__TASK_FREE_QUEUE));
+    fifo->Storage     =(CORE__TASK_FREE_CELL*) memory;
+    fifo->StorageMask =(uint32_t) (capacity-1);
+    fifo->Capacity    = capacity;
+    fifo->MemoryStart = memory;
+    fifo->MemorySize  = memory_size;
     for (i = 0; i < capacity; ++i)
     {   /* set the sequence number for each cell */
         CORE__TaskAtomicStore_u32(&fifo->Storage[i].Sequence, i, CORE__TASK_ATOMIC_ORDERING_RELAXED);
-        fifo->Storage[i].Value = i;
+        fifo->Storage[i].TaskIndex = i;
     }
     CORE__TaskAtomicStore_u32(&fifo->EnqueuePos, 0, CORE__TASK_ATOMIC_ORDERING_RELAXED);
     CORE__TaskAtomicStore_u32(&fifo->DequeuePos, 0, CORE__TASK_ATOMIC_ORDERING_RELAXED);
     return 0;
 }
 
-/* @summary Attempt to enqueue a value.
+/* @summary Push a task slot index onto the back of an available task queue. This function should be called by the thread that completed the task.
  * @param fifo The MPMC concurrent queue to receive the value.
- * @param value The value to enqueue.
+ * @param task_index The task slot index being returned to the pool.
  * @return Non-zero if the value was enqueued, or zero if the queue is currently full.
  */
 static int
-CORE__TaskMPMCQueuePut
+CORE__TaskFreeQueuePush
 (
-    CORE__TASK_MPMC_QUEUE *fifo, 
-    uint32_t              value
+    CORE__TASK_FREE_QUEUE *fifo, 
+    uint32_t         task_index
 )
 {
-    CORE__TASK_MPMC_CELL *cell;
-    CORE__TASK_MPMC_CELL *stor = fifo->Storage;
+    CORE__TASK_FREE_CELL *cell;
+    CORE__TASK_FREE_CELL *stor = fifo->Storage;
     uint32_t              mask = fifo->StorageMask;
     uint32_t               pos = CORE__TaskAtomicLoad_u32(&fifo->EnqueuePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
     uint32_t               seq;
-    int32_t               diff;
+    int64_t               diff;
     for ( ; ; )
     {
         cell = &stor[pos & mask];
         seq  = CORE__TaskAtomicLoad_u32(&cell->Sequence, CORE__TASK_ATOMIC_ORDERING_ACQUIRE);
-        diff =(int32_t) seq - (int32_t) pos;
+        diff =(int64_t) seq - (int64_t) pos;
         if (diff == 0)
         {   /* the queue is not full, attempt to claim this slot */
             if (CORE__TaskAtomicCompareAndSwap_u32(&fifo->EnqueuePos, &pos, pos + 1, 1, CORE__TASK_ATOMIC_ORDERING_RELAXED, CORE__TASK_ATOMIC_ORDERING_RELAXED))
@@ -905,34 +990,49 @@ CORE__TaskMPMCQueuePut
             pos = CORE__TaskAtomicLoad_u32(&fifo->EnqueuePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
         }
     }
-    cell->Value = value;
+    cell->TaskIndex = task_index;
     CORE__TaskAtomicStore_u32(&cell->Sequence, pos + 1, CORE__TASK_ATOMIC_ORDERING_RELEASE);
     return 1;
 }
 
-/* @summary Attempt to dequeue a value.
+/* @summary Push a task slot index onto the back of an available task queue. This function should be called by the thread that completed the task.
+ * @param fifo The MPMC concurrent queue to receive the value.
+ * @param task_id The task identifier returned to the pool. The task slot index is extracted from this value.
+ * @return Non-zero if the value was enqueued, or zero if the queue is currently full.
+ */
+static int
+CORE__TaskFreeQueuePushId
+(
+    CORE__TASK_FREE_QUEUE *fifo, 
+    CORE_TASK_ID        task_id
+)
+{   assert(CORE_TaskIdValid(task_id));
+    return CORE__TaskFreeQueuePush(fifo, CORE_TaskIndexInPool(task_id));
+}
+
+/* @summary Attempt to take a value from the front of an available task queue. This function should be called by the thread that owns the task pool and is defining the task.
  * @param fifo The MPMC concurrent queue from which the oldest value should be retrieved.
- * @param value If the function returns non-zero, on return, this location stores the dequeued value.
+ * @param task_index If the function returns non-zero, on return, this location stores the dequeued task slot index value.
  * @return Non-zero if a value was dequeued, or zero if the queue is currently empty.
  */
 static int
-CORE__TaskMPMCQueueGet
+CORE__TaskFreeQueueTake
 (
-    CORE__TASK_MPMC_QUEUE *fifo, 
-    uint32_t             *value
+    CORE__TASK_FREE_QUEUE *fifo, 
+    uint32_t        *task_index
 )
 {
-    CORE__TASK_MPMC_CELL *cell;
-    CORE__TASK_MPMC_CELL *stor = fifo->Storage;
+    CORE__TASK_FREE_CELL *cell;
+    CORE__TASK_FREE_CELL *stor = fifo->Storage;
     uint32_t              mask = fifo->StorageMask;
     uint32_t               pos = CORE__TaskAtomicLoad_u32(&fifo->DequeuePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
     uint32_t               seq;
-    int32_t               diff;
+    int64_t               diff;
     for ( ; ; )
     {
         cell = &stor[pos & mask];
         seq  = CORE__TaskAtomicLoad_u32(&cell->Sequence, CORE__TASK_ATOMIC_ORDERING_ACQUIRE);
-        diff =(int32_t) seq - (int32_t)(pos + 1);
+        diff =(int64_t) seq - (int64_t)(pos + 1);
         if (diff == 0)
         {   /* the queue is not empty, attempt to claim this slot */
             if (CORE__TaskAtomicCompareAndSwap_u32(&fifo->DequeuePos, &pos, pos + 1, 1, CORE__TASK_ATOMIC_ORDERING_RELAXED, CORE__TASK_ATOMIC_ORDERING_RELAXED))
@@ -949,9 +1049,181 @@ CORE__TaskMPMCQueueGet
             pos = CORE__TaskAtomicLoad_u32(&fifo->DequeuePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
         }
     }
-    *value = cell->Value;
+   *task_index = cell->TaskIndex;
     CORE__TaskAtomicStore_u32(&cell->Sequence, pos + mask + 1, CORE__TASK_ATOMIC_ORDERING_RELEASE);
     return 1;
+}
+
+/* @summary Calculate the amount of memory required for an concurrent deque of ready-to-run task IDs of a given capacity.
+ * @param capacity The capacity of the deque. This value must be a power-of-two greater than 2.
+ * @return The minimum number of bytes required to successfully initialize a deque with the specified capacity.
+ */
+static size_t
+CORE__QueryTaskWorkQueueMemorySize
+(
+    uint32_t capacity
+)
+{   assert(capacity >= 2); /* minimum capacity is 2 */
+    assert((capacity & (capacity-1)) == 0); /* must be a power-of-two */
+    return (capacity * sizeof(CORE_TASK_ID));
+}
+
+/* @summary Initialize a concurrent deque of ready-to-run task IDs.
+ * @param fifo The MPMC queue object to initialize.
+ * @param capacity The capacity of the deque. This value must be a power-of-two greater than 2.
+ * @param memory The memory block to use for the deque storage.
+ * @param memory_size The size of the memory block to use for the deque storage. This value must be at least the size returned by CORE__QueryTaskWorkQueueMemorySize(capacity).
+ * @return Zero if the deque is successfully initialized, or non-zero if an error occurred.
+ */
+static int
+CORE__InitTaskWorkQueue
+(
+    CORE__TASK_WORK_QUEUE *fifo,
+    uint32_t           capacity, 
+    void                *memory, 
+    size_t          memory_size
+)
+{
+    uint32_t i;
+
+    if (capacity < 2)
+    {   /* the minimum supported capacity is two elements */
+        assert(capacity >= 2);
+        ZeroMemory(fifo, sizeof(CORE__TASK_WORK_QUEUE));
+        return -1;
+    }
+    if ((capacity & (capacity-1)) != 0)
+    {   /* the capacity must be a power-of-two */
+        assert((capacity & (capacity-1)) == 0);
+        ZeroMemory(fifo, sizeof(CORE__TASK_WORK_QUEUE));
+        return -1;
+    }
+    if (memory_size < (capacity * sizeof(CORE_TASK_ID)))
+    {   /* the caller did not supply enough memory */
+        assert(memory_size >= (capacity * sizeof(CORE_TASK_ID)));
+        ZeroMemory(fifo, sizeof(CORE__TASK_WORK_QUEUE));
+        return -1;
+    }
+
+    ZeroMemory(fifo, sizeof(CORE__TASK_WORK_QUEUE));
+    fifo->Storage     =(CORE_TASK_ID*) memory;
+    fifo->StorageMask =(uint32_t) (capacity-1);
+    fifo->Capacity    = capacity;
+    fifo->MemoryStart = memory;
+    fifo->MemorySize  = memory_size;
+    CORE__TaskAtomicStore_s64(&fifo->PublicPos , 0, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+    CORE__TaskAtomicStore_s64(&fifo->PrivatePos, 0, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+    return 0;
+}
+
+/* @summary Push a task ID onto the back of a ready-to-run task queue. This function should be called by the thread that owns the task pool only.
+ * @param fifo The concurrent deque to receive the work item.
+ * @param task_id The ready-to-run task identifier.
+ * @return Non-zero if the value was enqueued, or zero if the deque is currently full.
+ */
+static void
+CORE__TaskWorkQueuePush
+(
+    CORE__TASK_WORK_QUEUE *fifo, 
+    CORE_TASK_ID        task_id
+)
+{
+    CORE_TASK_ID *stor = fifo->Storage;
+    int64_t       mask = fifo->StorageMask;
+    int64_t        pos = CORE__TaskAtomicLoad_s64(&fifo->PrivatePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+    stor[pos & mask]   = task_id;
+    CORE__TaskAtomicStore_s64(&fifo->PrivatePos, pos + 1, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+}
+
+/* @summary Attempt to take an item from the back of a ready-to-run task queue. This function should be called by the thread that owns the task pool only.
+ * @param fifo The concurrent deque from which to take the work item.
+ * @param task_id If the function returns non-zero, on return this location is updated with the task identifier of a ready-to-run task.
+ * @param more_items If the function returns non-zero, on return this location is set to non-zero if there is at least one additional item in the deque.
+ * @return Non-zero if a value was dequeued, or zero if the deque is currently empty.
+ */
+static int
+CORE__TaskWorkQueueTake
+(
+    CORE__TASK_WORK_QUEUE *fifo, 
+    CORE_TASK_ID       *task_id, 
+    int             *more_items
+)
+{
+    CORE_TASK_ID *stor = fifo->Storage;
+    int64_t       mask = fifo->StorageMask;
+    int64_t        pos = CORE__TaskAtomicLoad_s64(&fifo->PrivatePos, CORE__TASK_ATOMIC_ORDERING_RELAXED) - 1; /* no concurrent push operation can happen */
+    int64_t        top = 0;
+    int            res = 1;
+    CORE__TaskAtomicStore_s64(&fifo->PrivatePos, pos, CORE__TASK_ATOMIC_ORDERING_SEQ_CST);                    /* make the pop visible to a concurrent steal */
+    top = CORE__TaskAtomicLoad_s64(&fifo->PublicPos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+    if (top <= pos)
+    {   /* the deque is currently non-empty */
+       *task_id = stor[pos & mask];
+        if (top != pos)
+        {   /* there's at least one more item in the deque - no need to race */
+           *more_items = 1;
+            return 1;
+        }
+        /* this was the final item in the deque - race a concurrent steal to claim it */
+        if (!CORE__TaskAtomicCompareAndSwap_s64(&fifo->PublicPos, &top, top + 1, 0, CORE__TASK_ATOMIC_ORDERING_SEQ_CST, CORE__TASK_ATOMIC_ORDERING_RELAXED))
+        {   /* this thread lost the race to a concurrent steal */
+           *more_items = 0;
+           *task_id = CORE_INVALID_TASK_ID;
+            res = 0;
+        }
+        CORE__TaskAtomicStore_s64(&fifo->PrivatePos, top + 1, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+       *more_items = 0;
+        return res;
+    }
+    else
+    {   /* the deque is currently empty */
+       *more_items = 0;
+       *task_id = CORE_INVALID_TASK_ID;
+        CORE__TaskAtomicStore_s64(&fifo->PrivatePos, top, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+        return 0;
+    }
+}
+
+/* @summary Attempt to take an item from the front of a ready-to-run task queue. This function can be called by any thread that executes work items.
+ * @param fifo The concurrent deque from which to take the work item.
+ * @param task_id If the function returns non-zero, on return this location is updated with the task identifier of a ready-to-run task.
+ * @param more_items If the function returns non-zero, on return this location is set to non-zero if there is at least one additional item in the deque.
+ * @return Non-zero if a value was dequeued, or zero if the deque is currently empty.
+ */
+static int
+CORE__TaskWorkQueueSteal
+(
+    CORE__TASK_WORK_QUEUE *fifo, 
+    CORE_TASK_ID       *task_id, 
+    int             *more_items
+)
+{
+    CORE_TASK_ID *stor = fifo->Storage;
+    int64_t       mask = fifo->StorageMask;
+    int64_t        top = CORE__TaskAtomicLoad_s64(&fifo->PublicPos , CORE__TASK_ATOMIC_ORDERING_ACQUIRE);
+    int64_t        pos = CORE__TaskAtomicLoad_s64(&fifo->PrivatePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+    if (top < pos)
+    {   /* the deque is currently non-empty */
+       *task_id = stor[top & mask];
+        /* race with other threads to claim the item */
+        if (CORE__TaskAtomicCompareAndSwap_s64(&fifo->PublicPos, &top, top + 1, 0, CORE__TASK_ATOMIC_ORDERING_RELEASE, CORE__TASK_ATOMIC_ORDERING_RELAXED))
+        {   /* this thread won the race and claimed the item */
+           *more_items = (top != pos) ? 1 : 0;
+            return 1;
+        }
+        else
+        {   /* this thread lost the race - it should try again */
+           *more_items = 1;
+           *task_id = CORE_INVALID_TASK_ID;
+            return 0;
+        }
+    }
+    else
+    {   /* the deque is currently empty */
+       *more_items = 0;
+       *task_id = CORE_INVALID_TASK_ID;
+        return 0;
+    }
 }
 
 #endif /* CORE_TASK_IMPLEMENTATION */
