@@ -51,7 +51,7 @@ struct _CV_MARKERSERIES;
 #endif
 
 /* @summary Define various constants used to configure the task scheduler.
- * CORE_INVALID_TASK_ID    : Returned from API functions when a task could not be created.
+ * CORE_TASK_ID_INVALID    : Returned from API functions when a task could not be created.
  * CORE_MIN_TASK_POOLS     : The minimum allowable number of task pools. Each thread that interacts with the task system has an associated task pool.
  * CORE_MAX_TASK_POOLS     : The maximum allowable number of task pools. Each thread that interacts with the task system has an associated task pool.
  * CORE_MIN_TASKS_PER_POOL : The minimum allowable number of simultaneously active tasks per-task pool.
@@ -61,7 +61,7 @@ struct _CV_MARKERSERIES;
  */
 #ifndef CORE_TASK_CONSTANTS
 #define CORE_TASK_CONSTANTS
-#define CORE_INVALID_TASK_ID              0x7FFFFFFFL
+#define CORE_INVALID_TASK_ID              0x7FFFFFFFUL
 #define CORE_MIN_TASK_POOLS               1
 #define CORE_MAX_TASK_POOLS               4096
 #define CORE_MIN_TASKS_PER_POOL           2
@@ -144,6 +144,22 @@ struct _CV_MARKERSERIES;
 #define CORE_TaskSpanLeave(env, span)                                          \
     CvLeaveSpan((span).CvSpan)
 #endif
+#endif
+
+/* @summary Construct a task identifier from its constituient parts.
+ * Typically invoked as one of the following:
+ * task_id = CORE_MakeTaskId(CORE_TASK_ID_INTERNAL, PoolIndex, SlotIndex, CORE_TASK_ID_VALID)
+ * task_id = CORE_MakeTaskId(CORE_TASK_ID_INTERNAL, 0xFFF    , 0xFFFF   , CORE_TASK_ID_INVALID);
+ * task_id = CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, PoolIndex, SlotIndex, CORE_TASK_ID_VALID);
+ * task_id = CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0xFFF    , 0xFFFF   , CORE_TASK_ID_INVALID);
+ * @param _type Specify 1 to identify an internally-completed task or 0 to identify an externally-completed task.
+ * @param _pool The zero-based index of the task pool that defined the task.
+ * @param _slot The zero-based index of the task data slot allocated to the task within the task pool.
+ * @param _valid Specify 1 to create a valid task identifer or 0 to create an invalid task identifier.
+ */
+#ifndef CORE_MakeTaskId
+#define CORE_MakeTaskId(_type, _pool, _slot, _valid)                           \
+    ((((_valid) & 0x0001UL) << CORE_TASK_ID_SHIFT_VALID) | (((_type) & 0x0001UL) << CORE_TASK_ID_SHIFT_TYPE) | (((_pool) & 0x0FFFUL) << CORE_TASK_ID_SHIFT_POOL) | (((_slot) & 0xFFFFUL) << CORE_TASK_ID_SHIFT_INDEX))
 #endif
 
 /* @summary Check whether a task ID is valid.
@@ -286,6 +302,20 @@ typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_POOL {
     CORE_TASK_QUEUE                  WorkQueue;             /* The work-stealing deque of task IDs that are ready-to-run. */
 } CORE_TASK_POOL;
 #endif
+
+/* @summary Define some identifiers that may be passed to CORE_MakeTaskId for the _type argument to make the code more readable.
+ */
+typedef enum _CORE_TASK_ID_TYPE {
+    CORE_TASK_ID_EXTERNAL            =  0,                  /* The task is completed by an external event, such as an I/O operation. */
+    CORE_TASK_ID_INTERNAL            =  1,                  /* The task is completed internally by executing the task entry point. */
+} CORE_TASK_ID_TYPE;
+
+/* @summary Define some identifiers that may be passed to CORE_MakeTaskId for the _valid argument to make the code more readable.
+ */
+typedef enum _CORE_TASK_ID_VALIDITY {
+    CORE_TASK_ID_INVALID             =  0,                  /* The task identifier is not valid. */
+    CORE_TASK_ID_VALID               =  1,                  /* The task identifier is valid. */
+} CORE_TASK_ID_VALIDITY;
 
 #ifdef __cplusplus
 extern "C" {
@@ -1208,7 +1238,7 @@ CORE__TaskWorkQueueSteal
         /* race with other threads to claim the item */
         if (CORE__TaskAtomicCompareAndSwap_s64(&fifo->PublicPos, &top, top + 1, 0, CORE__TASK_ATOMIC_ORDERING_RELEASE, CORE__TASK_ATOMIC_ORDERING_RELAXED))
         {   /* this thread won the race and claimed the item */
-           *more_items = (top != pos) ? 1 : 0;
+           *more_items = ((top+1) < pos) ? 1 : 0;
             return 1;
         }
         else
