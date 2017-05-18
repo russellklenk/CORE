@@ -686,9 +686,40 @@ main
     int                result = 0;  /* success */
     CORE__TASK_FREE_QUEUE     freeq;
     CORE__TASK_WORK_QUEUE     workq;
+    CORE_TASK_CPU_INFO     cpu_info;
 
     UNREFERENCED_PARAMETER(argc);
     UNREFERENCED_PARAMETER(argv);
+
+    ConsoleOutput("tasktest: Reporting host system CPU information.\n");
+    if (CORE_QueryHostCpuInfo(&cpu_info) < 0)
+    {
+        ConsoleOutput("ERROR: Failed to retrieve host system CPU information.\n");
+        result = 1;
+    }
+    else
+    {
+        ConsoleOutput("NUMA node count    : %u\n", cpu_info.NumaNodes);
+        ConsoleOutput("Physical CPU count : %u\n", cpu_info.PhysicalCPUs);
+        ConsoleOutput("Physical CPU cores : %u\n", cpu_info.PhysicalCores);
+        ConsoleOutput("Hardware threads   : %u\n", cpu_info.HardwareThreads);
+        ConsoleOutput("Threads-per-core   : %u\n", cpu_info.ThreadsPerCore);
+        ConsoleOutput("L1 cache size      : %u\n", cpu_info.CacheSizeL1);
+        ConsoleOutput("L1 cacheline size  : %u\n", cpu_info.CacheLineSizeL1);
+        ConsoleOutput("L2 cache size      : %u\n", cpu_info.CacheSizeL2);
+        ConsoleOutput("L2 cacheline size  : %u\n", cpu_info.CacheLineSizeL2);
+        ConsoleOutput("Prefer AMD OpenCL  : %d\n", cpu_info.PreferAMD);
+        ConsoleOutput("Prefer Intel OpenCL: %d\n", cpu_info.PreferIntel);
+        ConsoleOutput("Is virtual machine : %d\n", cpu_info.IsVirtualMachine);
+        ConsoleOutput("CPU vendor string  : %S\n", cpu_info.VendorName);
+        if (cpu_info.CacheLineSizeL1 > CORE_TASK_L1_CACHELINE_SIZE)
+        {
+            ConsoleOutput("WARNING: For best performance, recompiled with /DCORE_TASK_L1_CACHELINE_SIZE=%u\n", cpu_info.CacheLineSizeL1);
+        }
+        ConsoleOutput("\n");
+    }
+
+    if (result) goto cleanup_and_exit;
 
     ConsoleOutput("tasktest: Testing underlying queue functionality.\n");
     ConsoleOutput("freeq capacity: %u items requiring %Iu bytes.\n", free_queue_count, free_queue_size);
