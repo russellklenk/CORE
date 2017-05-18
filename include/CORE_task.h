@@ -109,11 +109,11 @@ struct _CV_MARKERSERIES;
  * @param fmt The printf-style format string.
  * @param ... Substitution arguments for the format string.
  */
-#ifndef CORE_TaskEvent
+#ifndef CORE_TaskProfilerEvent
 #ifdef  CORE_TASK_NO_PROFILER
-#define CORE_TaskEvent(env, fmt, ...)
+#define CORE_TaskProfilerEvent(env, fmt, ...)
 #else
-#define CORE_TaskEvent(env, fmt, ...)                                          \
+#define CORE_TaskProfilerEvent(env, fmt, ...)                                  \
     CvWriteAlertW((env)->Profiler->MarkerSeries, _T(fmt), __VA_ARGS__)
 #endif
 #endif
@@ -124,11 +124,11 @@ struct _CV_MARKERSERIES;
  * @param fmt The printf-style format string.
  * @param ... Substitution arguments for the format string.
  */
-#ifndef CORE_TaskSpanEnter
+#ifndef CORE_TaskProfilerSpanEnter
 #ifdef  CORE_TASK_NO_PROFILER
-#define CORE_TaskSpanEnter(env, span, fmt, ...)
+#define CORE_TaskProfilerSpanEnter(env, span, fmt, ...)
 #else
-#define CORE_TaskSpanEnter(env, span, fmt, ...)                                \
+#define CORE_TaskProfilerSpanEnter(env, span, fmt, ...)                        \
     CvEnterSpanW((env)->Profiler->MarkerSeries, &(span).CvSpan, _T(fmt), __VA_ARGS__)
 #endif
 #endif
@@ -137,11 +137,11 @@ struct _CV_MARKERSERIES;
  * @param env The CORE_TASK_ENVIRONMENT object owned by the calling thread.
  * @param span The CORE_TASK_PROFILER_SPAN representing the labeled interval.
  */
-#ifndef CORE_TaskSpanLeave
+#ifndef CORE_TaskProfilerSpanLeave
 #ifdef  CORE_TASK_NO_PROFILER
-#define CORE_TaskSpanLeave(env, span)
+#define CORE_TaskProfilerSpanLeave(env, span)
 #else
-#define CORE_TaskSpanLeave(env, span)                                          \
+#define CORE_TaskProfilerSpanLeave(env, span)                                  \
     CvLeaveSpan((span).CvSpan)
 #endif
 #endif
@@ -208,7 +208,6 @@ struct _CV_MARKERSERIES;
 struct _CORE_TASK_CPU_INFO;
 struct _CORE_TASK_PROFILER;
 struct _CORE_TASK_PROFILER_SPAN;
-struct _CORE_TASK_QUEUE;
 struct _CORE_TASK_DATA;
 struct _CORE_TASK_POOL;
 struct _CORE_TASK_POOL_INIT;
@@ -241,10 +240,14 @@ typedef struct _CORE_TASK_CPU_INFO {
     uint32_t                         PhysicalCores;         /* The total number of physical cores across all CPUs. */
     uint32_t                         HardwareThreads;       /* The total number of hardware threads across all CPUs. */
     uint32_t                         ThreadsPerCore;        /* The number of hardware threads per physical core. */
+    uint32_t                         CacheSizeL1;           /* The total size of the smallest L1 data cache, in bytes. */
+    uint32_t                         CacheLineSizeL1;       /* The size of a single cache line in the L1 data cache, in bytes. */
+    uint32_t                         CacheSizeL2;           /* The total size of the smallest L2 data cache, in bytes. */
+    uint32_t                         CacheLineSizeL2;       /* The size of a single cache line in the L2 data cache, in bytes. */
     int32_t                          PreferAMD;             /* Non-zero if AMD implementations are preferred. */
     int32_t                          PreferIntel;           /* Non-zero if Intel implementations are preferred. */
     int32_t                          IsVirtualMachine;      /* Non-zero if the system appears to be a virtual machine. */
-    char                             VendorName[13];        /* The nul-terminated CPUID vendor string. */
+    char                             VendorName[16];        /* The nul-terminated CPUID vendor string. */
 } CORE_TASK_CPU_INFO;
 
 /* @summary Define the data associated with a task system profiler instance.
@@ -260,48 +263,17 @@ typedef struct _CORE_TASK_PROFILER_SPAN {
     struct _CV_SPAN                 *CvSpan;                /* The Concurrency Visualizer SDK object representing the time span. */
 } CORE_TASK_PROFILER_SPAN;
 
-/* @summary Define the data associated with a double-ended queue of ready-to-run task identifiers.
- * The thread that owns the queue can perform push and take operations; other threads can only perform steal operations.
+/* @summary Define the data used to configure a task pool, which allows tasks to be defined by the owning thread.
  */
+typedef struct _CORE_TASK_POOL_INIT {
+    uint32_t                         PoolId;                /* One of _CORE_TASK_POOL_ID, or any application-defined value unique within the task scheduler identifying the type of task pool. */
+    uint32_t                         PoolCount;             /* The number of task pools of this type that will be used by the application. */
+    uint32_t                         PoolUsage;             /* One or more bitwise OR'd values of the _CORE_TASK_POOL_USAGE enumeration, defining how the thread(s) that own pool instances of this type will behave. */
+    uint32_t                         MaxActiveTasks;        /* The maximum number of simultaneously active tasks that can be defined within each pool of this type. */
+} CORE_TASK_POOL_INIT;
 
-/* @summary Define the data tracked internally for each task. Aligned to and limited to one cacheline.
- */
-typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_DATA {
-    #define NUM_DATA                 CORE_MAX_TASK_DATA_BYTES
-    #define NUM_PERMITS              CORE_MAX_TASK_PERMITS
-    int32_t                          WaitCount;             /* The number of tasks that must complete before this task can run. */
-    CORE_TASK_ID                     ParentId;              /* The identifier of the parent task, or CORE_INVALID_TASK_ID. */
-    CORE_TaskMain_Func               TaskMain;              /* The function to call to execute the task workload. */
-    uint8_t                          TaskData[NUM_DATA];    /* Argument data to pass to the task entrypoint. */
-    int32_t                          WorkCount;             /* The number of outstanding work items (one for the task, plus one for each child task.) */
-    int32_t                          PermitCount;           /* The number of tasks that this task permits to run (the number of valid permits.) */
-    CORE_TASK_ID                     PermitIds[NUM_PERMITS];/* The task ID of each task permitted to run when this task completes. */
-    #undef  NUM_PERMITS
-    #undef  NUM_DATA
-} CORE_TASK_DATA;
-
-/* @summary Define the data associated with a pre-allocated, fixed-size pool of tasks.
- * Each task pool is associated with a single thread that submits and optionally executes tasks.
- */
-#if 0
-typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_POOL {
-    uint16_t                        *TaskFreeList;          /* An array of indices of free task slots. */
-    uint32_t                         IndexMask;             /* A mask value used to map a task index value into the task data arrays. This is the array size minus one. */
-    uint32_t                         PoolIndex;             /* The zero-based index of this task pool within the scheduler's array of task pools. */
-    uint32_t                         PoolUsage;             /* One or more of _CORE_TASK_POOL_USAGE indicating, among other things, whether the pool can be used to execute tasks. */
-    uint32_t                         ThreadId;              /* The operating system identifier of the thread that owns the pool. */
-    int32_t                          LastError;             /* The error code reported by the most recent attempt to define a task within the pool. */
-    uint32_t                         PoolId;                /* The application-defined identifier of the associated pool type. */
-    uint32_t                         Reserved1;             /* Reserved for future use. Set to zero. */
-    uint32_t                         Reserved2;             /* Reserved for future use. Set to zero. */
-    uint16_t                         NextWorker;            /* The zero-based index of the next worker thread to notify of waiting tasks that can be stolen. */
-    uint16_t                         WorkerCount;           /* The total number of worker threads in the scheduler thread pool. */
-    struct _CORE_TASK_POOL          *TaskPoolList;          /* A local pointer to the set of all task pools owned by the scheduler. */
-    struct _CORE_TASK_DATA          *TaskPoolData;          /* The buffer used for storing per-task data. */
-    struct _CORE_TASK_POOL          *NextFreePool;          /* A pointer to the next free pool in the free list, or NULL if this pool is currently allocated. */
-    CORE_TASK_QUEUE                  WorkQueue;             /* The work-stealing deque of task IDs that are ready-to-run. */
-} CORE_TASK_POOL;
-#endif
+/* _CORE_TASK_POOL_STORAGE - allow the user to allocate and initialize task pool storage only */
+/* Used by everything else to access the task pool data for defining and completing tasks */
 
 /* @summary Define some identifiers that may be passed to CORE_MakeTaskId for the _type argument to make the code more readable.
  */
@@ -317,9 +289,51 @@ typedef enum _CORE_TASK_ID_VALIDITY {
     CORE_TASK_ID_VALID               =  1,                  /* The task identifier is valid. */
 } CORE_TASK_ID_VALIDITY;
 
+/* @summary Define some well-known task pool identifiers.
+ */
+typedef enum _CORE_TASK_POOL_ID {
+    CORE_TASK_POOL_ID_MAIN           =  0,                  /* The identifier of the task pool associated with the main application thread. */
+    CORE_TASK_POOL_ID_WORKER         =  1,                  /* The identifier of the task pool associated with each worker thread. */
+    CORE_TASK_POOL_ID_USER           =  2,                  /* The identifier of the first custom application task pool. */
+} CORE_TASK_POOL_ID;
+
 #ifdef __cplusplus
 extern "C" {
 #endif /* __cplusplus */
+
+/* @summary Determine basic attributes of the host system CPU layout.
+ * This function allocates a small amount of scratch memory and frees it before returning. Do not call this function in performance-critical code.
+ * @param cpu_info On return, this location is updated with information about the host system CPU layout.
+ * @return Zero if the function executes successfully, or -1 if an error occurred.
+ */
+CORE_API(int)
+CORE_QueryHostCpuInfo
+(
+    CORE_TASK_CPU_INFO *cpu_info
+);
+
+/* @summary Initialize a task scheduler profiler object. 
+ * Profile data can be captured and displayed using the Visual Studio Concurrency Visualizer plugin.
+ * The task profiler GUID is {349CE0E9-6DF5-4C25-AC5B-C84F529BC0CE}.
+ * @param profiler The CORE_TASK_PROFILER object to initialize.
+ * @param application_name A nul-terminated string specifying a string used to identify application markers.
+ * @return Zero if the profiler is successfully initialized, or -1 if an error occurred.
+ */
+CORE_API(int)
+CORE_CreateTaskProfiler
+(
+    CORE_TASK_PROFILER  *profiler, 
+    WCHAR const *application_name
+);
+
+/* @summary Free resources associated with a task scheduler profiler object.
+ * @param profiler The CORE_TASK_PROFILER object to delete.
+ */
+CORE_API(void)
+CORE_DeleteTaskProfiler
+(
+    CORE_TASK_PROFILER *profiler
+);
 
 #ifdef __cplusplus
 }; /* extern "C" */
@@ -363,17 +377,17 @@ extern "C" {
  * These items store the zero-based index of a free task slot within the task pool.
  */
 typedef struct _CORE__TASK_FREE_CELL {
-    uint32_t                              Sequence;          /* The sequence number assigned to the cell. */
-    uint32_t                              TaskIndex;         /* The value stored in the cell. This is the zero-based index of an available task slot. */
+    uint32_t                              Sequence;               /* The sequence number assigned to the cell. */
+    uint32_t                              TaskIndex;              /* The value stored in the cell. This is the zero-based index of an available task slot. */
 } CORE__TASK_FREE_CELL;
 
 /* @summary Define the data associated with a semaphore guaranteed to stay in userspace unless a thread needs to be downed or woken.
  */
 typedef struct CORE_TASK_CACHELINE_ALIGN _CORE__TASK_SEMAPHORE {
     #define PAD_SIZE                      CORE__TASK_SEMAPHORE_PADDING_SIZE
-    HANDLE                                Semaphore;         /* The operating system semaphore object. */
-    int32_t                               Count;             /* The current count. */
-    uint8_t                               Pad[PAD_SIZE];     /* Padding out to a cacheline boundary. */
+    HANDLE                                Semaphore;              /* The operating system semaphore object. */
+    int32_t                               Count;                  /* The current count. */
+    uint8_t                               Pad[PAD_SIZE];          /* Padding out to a cacheline boundary. */
     #undef  PAD_SIZE
 } CORE__TASK_SEMAPHORE;
 
@@ -388,16 +402,16 @@ typedef struct CORE_TASK_CACHELINE_ALIGN _CORE__TASK_FREE_QUEUE {
     #define PAD_SHARED                    CORE__TASK_FREE_QUEUE_PADDING_SIZE_SHARED
     #define PAD_ENQUEUE                   CORE__TASK_FREE_QUEUE_PADDING_SIZE_INDEX
     #define PAD_DEQUEUE                   CORE__TASK_FREE_QUEUE_PADDING_SIZE_INDEX
-    CORE__TASK_FREE_CELL                 *Storage;           /* Storage for queue items. Fixed-size, power-of-two capacity. */
-    uint32_t                              StorageMask;       /* The mask used to map EnqueuePos and DequeuePos into the storage array. */
-    uint32_t                              Capacity;          /* The maximum number of items that can be stored in the queue. */
-    void                                 *MemoryStart;       /* The pointer to the start of the allocated memory block. */
-    size_t                                MemorySize;        /* The size of the allocated memory block, in bytes. */
-    uint8_t                               Pad0[PAD_SHARED];  /* Padding separating shared data from producer-only data. */
-    uint32_t                              EnqueuePos;        /* A monotonically-increasing integer representing the position of the next enqueue operation. */
-    uint8_t                               Pad1[PAD_ENQUEUE]; /* Padding separating the producer-only data from the consumer-only data. */
-    uint32_t                              DequeuePos;        /* A monotonically-increasing integer representing the position of the next dequeue operation. */
-    uint8_t                               Pad2[PAD_DEQUEUE]; /* Padding separating the consumer-only data from adjacent data. */
+    CORE__TASK_FREE_CELL                 *Storage;                /* Storage for queue items. Fixed-size, power-of-two capacity. */
+    uint32_t                              StorageMask;            /* The mask used to map EnqueuePos and DequeuePos into the storage array. */
+    uint32_t                              Capacity;               /* The maximum number of items that can be stored in the queue. */
+    void                                 *MemoryStart;            /* The pointer to the start of the allocated memory block. */
+    size_t                                MemorySize;             /* The size of the allocated memory block, in bytes. */
+    uint8_t                               Pad0[PAD_SHARED];       /* Padding separating shared data from producer-only data. */
+    uint32_t                              EnqueuePos;             /* A monotonically-increasing integer representing the position of the next enqueue operation. */
+    uint8_t                               Pad1[PAD_ENQUEUE];      /* Padding separating the producer-only data from the consumer-only data. */
+    uint32_t                              DequeuePos;             /* A monotonically-increasing integer representing the position of the next dequeue operation. */
+    uint8_t                               Pad2[PAD_DEQUEUE];      /* Padding separating the consumer-only data from adjacent data. */
     #undef  PAD_SHARED
     #undef  PAD_ENQUEUE
     #undef  PAD_DEQUEUE
@@ -413,20 +427,36 @@ typedef struct CORE_TASK_CACHELINE_ALIGN _CORE__TASK_WORK_QUEUE {
     #define PAD_SHARED                    CORE__TASK_WORK_QUEUE_PADDING_SIZE_SHARED
     #define PAD_PUBLIC                    CORE__TASK_WORK_QUEUE_PADDING_SIZE_INDEX
     #define PAD_PRIVATE                   CORE__TASK_WORK_QUEUE_PADDING_SIZE_INDEX
-    CORE_TASK_ID                         *Storage;           /* Storage for queue items (ready-to-run task identifiers.) Fixed-size, power-of-two capacity. */
-    uint32_t                              StorageMask;       /* The mask used to map PublicPos and PrivatePos into the storage array. */
-    uint32_t                              Capacity;          /* The maximum number of items that can be stored in the queue. */
-    void                                 *MemoryStart;       /* The pointer to the start of the allocated memory block. */
-    size_t                                MemorySize;        /* The size of the allocated memory block, in bytes. */
-    uint8_t                               Pad0[PAD_SHARED];  /* Padding separating shared data from the public-only end of the queue. */
-    int64_t                               PublicPos;         /* A monotonically-increasing integer representing the public end of the dequeue, updated by Steal operations. */
-    uint8_t                               Pad1[PAD_PUBLIC];  /* Padding separating the public-only data from the private-only data. */
-    int64_t                               PrivatePos;        /* A monotonically-increasing integer representing the private end of the dequeue, updated by Push and Take operations. */
-    uint8_t                               Pad2[PAD_PRIVATE]; /* Padding separating the private-only data from adjacent data. */
+    CORE_TASK_ID                         *Storage;                /* Storage for queue items (ready-to-run task identifiers.) Fixed-size, power-of-two capacity. */
+    uint32_t                              StorageMask;            /* The mask used to map PublicPos and PrivatePos into the storage array. */
+    uint32_t                              Capacity;               /* The maximum number of items that can be stored in the queue. */
+    void                                 *MemoryStart;            /* The pointer to the start of the allocated memory block. */
+    size_t                                MemorySize;             /* The size of the allocated memory block, in bytes. */
+    uint8_t                               Pad0[PAD_SHARED];       /* Padding separating shared data from the public-only end of the queue. */
+    int64_t                               PublicPos;              /* A monotonically-increasing integer representing the public end of the dequeue, updated by Steal operations. */
+    uint8_t                               Pad1[PAD_PUBLIC];       /* Padding separating the public-only data from the private-only data. */
+    int64_t                               PrivatePos;             /* A monotonically-increasing integer representing the private end of the dequeue, updated by Push and Take operations. */
+    uint8_t                               Pad2[PAD_PRIVATE];      /* Padding separating the private-only data from adjacent data. */
     #undef  PAD_SHARED
     #undef  PAD_PUBLIC
     #undef  PAD_PRIVATE
 } CORE__TASK_WORK_QUEUE;
+
+/* @summary Define the data tracked internally for each task. Aligned to and limited to one cacheline.
+ */
+typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_DATA {
+    #define NUM_DATA                      CORE_MAX_TASK_DATA_BYTES
+    #define NUM_PERMITS                   CORE_MAX_TASK_PERMITS
+    int32_t                               WaitCount;              /* The number of tasks that must complete before this task can run. */
+    CORE_TASK_ID                          ParentId;               /* The identifier of the parent task, or CORE_INVALID_TASK_ID. */
+    CORE_TaskMain_Func                    TaskMain;               /* The function to call to execute the task workload. */
+    uint8_t                               TaskData[NUM_DATA];     /* Argument data to pass to the task entrypoint. */
+    int32_t                               WorkCount;              /* The number of outstanding work items (one for the task, plus one for each child task.) */
+    int32_t                               PermitCount;            /* The number of tasks that this task permits to run (the number of valid permits.) */
+    CORE_TASK_ID                          PermitIds[NUM_PERMITS]; /* The task ID of each task permitted to run when this task completes. */
+    #undef  NUM_PERMITS
+    #undef  NUM_DATA
+} CORE_TASK_DATA;
 
 /* @summary Define the supported memory ordering constraints for atomic operations.
  */
@@ -1254,6 +1284,191 @@ CORE__TaskWorkQueueSteal
        *task_id = CORE_INVALID_TASK_ID;
         return 0;
     }
+}
+
+/* @summary Implement a replacement for the strcmp function.
+ * This function is not optimized and should not be used in performance-critical code.
+ * @param str_a Pointer to a nul-terminated string. This value cannot be NULL.
+ * @param str_b Pointer to a nul-terminated string. This value cannot be NULL.
+ * @return Zero if the two strings match. A positive value if the first non-matching character in str_a > the corresponding character in str_b. A negative value if the first non-matching character str_a < the corresponding character in str_b.
+ */
+static int
+CORE__TaskStringCompare
+(
+    char const *str_a, 
+    char const *str_b
+)
+{
+    unsigned char const *a = (unsigned char const *) str_a;
+    unsigned char const *b = (unsigned char const *) str_b;
+    while (*a && (*a == *b))
+    {
+        ++a;
+        ++b;
+    }
+    return (*a - *b);
+}
+
+/* @summary Calculate the number of bits set in a processor affinity mask.
+ * @param processor_mask The processor affinity mask to check.
+ * @return The number of bits set in the mask.
+ */
+static uint32_t
+CORE__TaskCountSetBitsInProcessorMask
+(
+    ULONG_PTR processor_mask
+)
+{
+    uint32_t         i;
+    uint32_t set_count = 0;
+    uint32_t max_shift = sizeof(ULONG_PTR) * 8 - 1;
+    ULONG_PTR test_bit =((ULONG_PTR)1) << max_shift;
+    for (i = 0; i <= max_shift; ++i)
+    {
+        set_count +=(processor_mask & test_bit) ? 1 : 0;
+        test_bit >>= 1;
+    }
+    return set_count;
+}
+
+CORE_API(int)
+CORE_QueryHostCpuInfo
+(
+    CORE_TASK_CPU_INFO *cpu_info
+)
+{   /* this function supports systems with up to 64 cores  */
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION *lpibuf = NULL;
+    size_t                                  i, n;
+    uint32_t                         num_threads = 0;
+    DWORD                            buffer_size = 0;
+    int                                  regs[4] ={0, 0, 0, 0};
+
+    ZeroMemory(cpu_info, sizeof(CORE_TASK_CPU_INFO));
+
+    /* retrieve the CPU vendor string using the __cpuid intrinsic */
+    __cpuid(regs, 0);
+    *((int*) &cpu_info->VendorName[0]) = regs[1];
+    *((int*) &cpu_info->VendorName[4]) = regs[3];
+    *((int*) &cpu_info->VendorName[8]) = regs[2];
+         if (!CORE__TaskStringCompare(cpu_info->VendorName, "AuthenticAMD")) cpu_info->PreferAMD        = 1;
+    else if (!CORE__TaskStringCompare(cpu_info->VendorName, "GenuineIntel")) cpu_info->PreferIntel      = 1;
+    else if (!CORE__TaskStringCompare(cpu_info->VendorName, "KVMKVMKVMKVM")) cpu_info->IsVirtualMachine = 1;
+    else if (!CORE__TaskStringCompare(cpu_info->VendorName, "Microsoft Hv")) cpu_info->IsVirtualMachine = 1;
+    else if (!CORE__TaskStringCompare(cpu_info->VendorName, "VMwareVMware")) cpu_info->IsVirtualMachine = 1;
+    else if (!CORE__TaskStringCompare(cpu_info->VendorName, "XenVMMXenVMM")) cpu_info->IsVirtualMachine = 1;
+
+    /* inspect the CPU topology. this requires scratch memory. */
+    GetLogicalProcessorInformation(NULL, &buffer_size);
+    if ((lpibuf = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION*) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, buffer_size)) == NULL)
+    {   /* failed to allocate the required amount of memory */
+        ZeroMemory(cpu_info, sizeof(CORE_TASK_CPU_INFO));
+        return -1;
+    }
+    if (GetLogicalProcessorInformation(lpibuf, &buffer_size))
+    {   /* at least one SYSTEM_LOGICAL_PROCESSOR_INFORMATION was returned */
+        for (i = 0, n = buffer_size / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION); i < n; ++i)
+        {
+            switch (lpibuf[i].Relationship)
+            {
+                case RelationProcessorCore:
+                    { num_threads = CORE__TaskCountSetBitsInProcessorMask(lpibuf[i].ProcessorMask);
+                      cpu_info->HardwareThreads += num_threads;
+                      cpu_info->ThreadsPerCore = num_threads;
+                      cpu_info->PhysicalCores++;
+                    } break;
+                case RelationNumaNode:
+                    { cpu_info->NumaNodes++;
+                    } break;
+                case RelationCache:
+                    { if (lpibuf[i].Cache.Level == 1 && lpibuf[i].Cache.Type == CacheData)
+                      { /* L1 cache information */
+                          cpu_info->CacheSizeL1     = lpibuf[i].Cache.Size;
+                          cpu_info->CacheLineSizeL1 = lpibuf[i].Cache.LineSize;
+                      }
+                      if (lpibuf[i].Cache.Level == 2 && lpibuf[i].Cache.Type == CacheUnified)
+                      { /* L2 cache information */
+                          cpu_info->CacheSizeL2     = lpibuf[i].Cache.Size;
+                          cpu_info->CacheLineSizeL2 = lpibuf[i].Cache.LineSize;
+                      }
+                    } break;
+                case RelationProcessorPackage:
+                    { cpu_info->PhysicalCPUs++;
+                    } break;
+                default:
+                    { /* unknown relationship type - skip */
+                    } break;
+            }
+        }
+        HeapFree(GetProcessHeap(), 0, lpibuf);
+        return 0;
+    }
+    else
+    {   /* the call to GetLogicalProcessorInformation failed */
+        ZeroMemory(cpu_info, sizeof(CORE_TASK_CPU_INFO));
+        HeapFree(GetProcessHeap(), 0, lpibuf);
+        return -1;
+    }
+}
+
+CORE_API(int)
+CORE_CreateTaskProfiler
+(
+    CORE_TASK_PROFILER  *profiler, 
+    WCHAR const *application_name
+)
+{
+#ifdef CORE_TASK_NO_PROFILER
+    ZeroMemory(profiler, sizeof(CORE_TASK_PROFILER));
+    return 0;
+#else
+    CV_MARKERSERIES  *series = NULL;
+    CV_PROVIDER    *provider = NULL;
+    HRESULT              res = S_OK;
+    GUID const PROFILER_GUID = { 
+        0x349ce0e9, 0x6df5, 0x4c25, 
+      { 0xac, 0x5b, 0xc8, 0x4f, 0x52, 0x9b, 0xc0, 0xce } 
+    };
+    if (application_name == NULL)
+    {   /* a non-NULL name is required, but an empty string is okay */
+        application_name = L"CORE_TASK_PROFILER";
+    }
+    if (!SUCCEEDED((res = CvInitProvider(&PROFILER_GUID, &provider))))
+    {
+        ZeroMemory(profiler, sizeof(CORE_TASK_PROFILER));
+        return -1;
+    }
+    if (!SUCCEEDED((res = CvCreateMarkerSeriesW(provider, application_name, &series))))
+    {
+        ZeroMemory(profiler, sizeof(CORE_TASK_PROFILER));
+        CvReleaseProvider(provider);
+        return -1;
+    }
+    profiler->Provider     = provider;
+    profiler->MarkerSeries = series;
+    return 0;
+#endif
+}
+
+CORE_API(void)
+CORE_DeleteTaskProfiler
+(
+    CORE_TASK_PROFILER *profiler
+)
+{
+#ifdef CORE_TASK_NO_PROFILER
+    UNREFERENCED_PARAMETER(profiler);
+#else
+    if (profiler->MarkerSeries != NULL)
+    {
+        CvReleaseMarkerSeries(profiler->MarkerSeries);
+        profiler->MarkerSeries = NULL;
+    }
+    if (profiler->Provider != NULL)
+    {
+        CvReleaseProvider(profiler->Provider);
+        profiler->Provider = NULL;
+    }
+#endif
 }
 
 #endif /* CORE_TASK_IMPLEMENTATION */
