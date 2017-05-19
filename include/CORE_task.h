@@ -211,6 +211,8 @@ struct _CORE_TASK_PROFILER_SPAN;
 struct _CORE_TASK_DATA;
 struct _CORE_TASK_POOL;
 struct _CORE_TASK_POOL_INIT;
+struct _CORE_TASK_POOL_STORAGE;
+struct _CORE_TASK_POOL_STORAGE_INIT;
 struct _CORE_TASK_ENVIRONMENT;
 struct _CORE_TASK_SCHEDULER;
 struct _CORE_TASK_SCHEDULER_INIT;
@@ -269,33 +271,69 @@ typedef struct _CORE_TASK_POOL_INIT {
     uint32_t                         PoolId;                /* One of _CORE_TASK_POOL_ID, or any application-defined value unique within the task scheduler identifying the type of task pool. */
     uint32_t                         PoolCount;             /* The number of task pools of this type that will be used by the application. */
     uint32_t                         PoolUsage;             /* One or more bitwise OR'd values of the _CORE_TASK_POOL_USAGE enumeration, defining how the thread(s) that own pool instances of this type will behave. */
-    uint32_t                         MaxActiveTasks;        /* The maximum number of simultaneously active tasks that can be defined within each pool of this type. */
+    uint32_t                         MaxActiveTasks;        /* The maximum number of simultaneously active tasks that can be defined within each pool of this type. This value must be a power-of-two. */
 } CORE_TASK_POOL_INIT;
 
-/* _CORE_TASK_POOL_STORAGE - allow the user to allocate and initialize task pool storage only */
-/* Used by everything else to access the task pool data for defining and completing tasks */
+/* @summary Define the data representing a fixed set of task data pools (used for defining tasks).
+ */
+typedef struct _CORE_TASK_POOL_STORAGE {
+    void                            *MemoryStart;           /* A pointer to the start of the memory block allocated for the storage array. */
+    uint64_t                         MemorySize;            /* The total size of the memory block allocated for the storage array. */
+    uint32_t                         PoolTypeCount;         /* The number of task pool types defined within the storage array. */
+    uint32_t                         TaskSlotCount;         /* The total number of task slots across all task pools. */
+    uint32_t                         TaskPoolCount;         /* The total number of task pool objects. */
+    uint32_t                         Reserved;              /* Reserved for future use. Set to zero. */
+    uint32_t                        *PoolTypeIds;           /* An array of PoolTypeCount values, where each value specifies the task pool ID. */
+    struct _CORE_TASK_POOL         **PoolFreeList;          /* An array of PoolTypeCount pointers to the free list for each task pool ID. */
+    CRITICAL_SECTION                *PoolFreeListLocks;     /* An array of PoolTypeCount critical sections protecting the free list for each task pool ID. */
+    struct _CORE_TASK_POOL         **TaskPools;             /* Pointers to each task pool object. */
+} CORE_TASK_POOL_STORAGE;
+
+/* @summary Define the attributes used to initialize a task pool storage container.
+ */
+typedef struct _CORE_TASK_POOL_STORAGE_INIT {
+    void                            *MemoryStart;           /* A pointer to the start of the memory block allocated for the storage array. */
+    uint64_t                         MemorySize;            /* The total size of the memory block allocated for the storage array. */
+    struct _CORE_TASK_POOL_INIT     *TaskPoolTypes;         /* An array of structures defining the types of task pools used by the application. */
+    uint32_t                         PoolTypeCount;         /* The number of _CORE_TASK_POOL_INIT structures in TaskPoolTypes. */
+    uint32_t                         WorkerCount;           /* The number of worker threads that can be signaled to execute tasks. */
+    HANDLE                          *WorkerSet;             /* An array of WorkerCount I/O completion port handles to be signaled when tasks are available to steal. */
+} CORE_TASK_POOL_STORAGE_INIT;
 
 /* @summary Define some identifiers that may be passed to CORE_MakeTaskId for the _type argument to make the code more readable.
  */
 typedef enum _CORE_TASK_ID_TYPE {
-    CORE_TASK_ID_EXTERNAL            =  0,                  /* The task is completed by an external event, such as an I/O operation. */
-    CORE_TASK_ID_INTERNAL            =  1,                  /* The task is completed internally by executing the task entry point. */
+    CORE_TASK_ID_EXTERNAL                             =  0, /* The task is completed by an external event, such as an I/O operation. */
+    CORE_TASK_ID_INTERNAL                             =  1, /* The task is completed internally by executing the task entry point. */
 } CORE_TASK_ID_TYPE;
 
 /* @summary Define some identifiers that may be passed to CORE_MakeTaskId for the _valid argument to make the code more readable.
  */
 typedef enum _CORE_TASK_ID_VALIDITY {
-    CORE_TASK_ID_INVALID             =  0,                  /* The task identifier is not valid. */
-    CORE_TASK_ID_VALID               =  1,                  /* The task identifier is valid. */
+    CORE_TASK_ID_INVALID                              =  0, /* The task identifier is not valid. */
+    CORE_TASK_ID_VALID                                =  1, /* The task identifier is valid. */
 } CORE_TASK_ID_VALIDITY;
 
 /* @summary Define some well-known task pool identifiers.
  */
 typedef enum _CORE_TASK_POOL_ID {
-    CORE_TASK_POOL_ID_MAIN           =  0,                  /* The identifier of the task pool associated with the main application thread. */
-    CORE_TASK_POOL_ID_WORKER         =  1,                  /* The identifier of the task pool associated with each worker thread. */
-    CORE_TASK_POOL_ID_USER           =  2,                  /* The identifier of the first custom application task pool. */
+    CORE_TASK_POOL_ID_MAIN                            =  0, /* The identifier of the task pool associated with the main application thread. */
+    CORE_TASK_POOL_ID_WORKER                          =  1, /* The identifier of the task pool associated with each worker thread. */
+    CORE_TASK_POOL_ID_USER                            =  2, /* The identifier of the first custom application task pool. */
 } CORE_TASK_POOL_ID;
+
+/* @summary Define the possible validation codes that can be generated by CORE_ValidateTaskPoolConfiguration.
+ */
+typedef enum _CORE_TASK_POOL_VALIDATION_RESULT {
+    CORE_TASK_POOL_VALIDATION_RESULT_SUCCESS          =  0, /* No issue was detected. */
+    CORE_TASK_POOL_VALIDATION_RESULT_TOO_MANY_POOLS   =  1, /* The task pool type specifies too many pools, or the sum of pool counts across all types exceeds the maximum number of pools. */
+    CORE_TASK_POOL_VALIDATION_RESULT_TOO_MANY_TASKS   =  2, /* The task pool type specifies too many concurrently active tasks in MaxActiveTasks. */
+    CORE_TASK_POOL_VALIDATION_RESULT_TOO_FEW_TASKS    =  3, /* The task pool type specifies too few tasks for the MaxActiveTasks value. */
+    CORE_TASK_POOL_VALIDATION_RESULT_NOT_POWER_OF_TWO =  4, /* The MaxActiveTasks value is not a power-of-two. */
+    CORE_TASK_POOL_VALIDATION_RESULT_DUPLICATE_ID     =  5, /* The same PoolId is used for more than one CORE_TASK_POOL_INIT structure. */
+    CORE_TASK_POOL_VALIDATION_RESULT_INVALID_USAGE    =  6, /* The PoolUsage field is invalid. */
+    CORE_TASK_POOL_VALIDATION_RESULT_NO_WORKER_ID     =  7, /* None of the types supplied specify PoolId CORE_TASK_POOL_ID_WORKER. */
+} CORE_TASK_POOL_VALIDATION_RESULT;
 
 #ifdef __cplusplus
 extern "C" {
@@ -335,6 +373,78 @@ CORE_DeleteTaskProfiler
     CORE_TASK_PROFILER *profiler
 );
 
+/* @summary Inspect one or more task pool configurations and perform validation checks against them.
+ * @param type_configs An array of type_count CORE_TASK_POOL_INIT structures defining the configuration for each type of task pool.
+ * @param type_results An array of type_count integers where the validation results for each CORE_TASK_POOL_INIT will be written.
+ * @param type_count The number of elements in the type_configs and type_results arrays.
+ * @param global_result On return, any non type-specific validation error is written to this location.
+ * @return Zero if the task pool configurations are all valid, or -1 if one or more problems were detected.
+ */
+CORE_API(int)
+CORE_ValidateTaskPoolConfiguration
+(
+    CORE_TASK_POOL_INIT *type_configs,
+    int32_t             *type_results, 
+    uint32_t               type_count, 
+    int32_t            *global_result
+);
+
+/* @summary Determine the amount of memory required to initialize a task pool storage object with the given configuration.
+ * @param type_configs An array of type_count CORE_TASK_POOL_INIT structures defining the configuration for each task pool type.
+ * @param type_count The number of elements in the type_configs array.
+ * @return The minimum number of bytes required to successfully initialize a task pool storage object with the given configuration.
+ */
+CORE_API(size_t)
+CORE_QueryTaskPoolStorageMemorySize
+(
+    CORE_TASK_POOL_INIT *type_configs, 
+    uint32_t               type_count
+);
+
+/* @summary Initialize a task pool storage blob.
+ * @param storage The CORE_TASK_POOL_STORAGE to initialize.
+ * @param init Data used to configure the storage pool.
+ * @return Zero if the storage object is successfully initialized, or -1 if an error occurred.
+ */
+CORE_API(int)
+CORE_CreateTaskPoolStorage
+(
+    CORE_TASK_POOL_STORAGE   *storage, 
+    CORE_TASK_POOL_STORAGE_INIT *init
+);
+
+/* @summary Free all resources associated with a task pool storage object.
+ * @param storage The CORE_TASK_POOL_STORAGE object to delete.
+ */
+CORE_API(void)
+CORE_DeleteTaskPoolStorage
+(
+    CORE_TASK_POOL_STORAGE *storage
+);
+
+/* @summary Acquire a task pool and bind it to the calling thread.
+ * This function is safe to call from multiple threads simultaneously.
+ * This function should not be called from performance-critical code, as it may block.
+ * @param storage The CORE_TASK_POOL_STORAGE object from which the pool should be acquired.
+ * @param pool_type_id One of _CORE_TASK_POOL_ID, or an application-defined value specifying the pool type to acquire.
+ * @return A pointer to the task pool object, or NULL if no pool of the specified type could be acquired.
+ */
+CORE_API(struct _CORE_TASK_POOL*)
+CORE_AcquireTaskPool
+(
+    CORE_TASK_POOL_STORAGE *storage, 
+    uint32_t           pool_type_id
+);
+
+/* @summary Release a task pool back to the storage object it was allocated from.
+ * @param pool The task pool object to release.
+ */
+CORE_API(void)
+CORE_ReleaseTaskPool
+(
+    struct _CORE_TASK_POOL *pool
+);
+
 #ifdef __cplusplus
 }; /* extern "C" */
 #endif /* __cplusplus */
@@ -372,6 +482,56 @@ CORE_DeleteTaskProfiler
 #ifndef CORE__TASK_WORK_QUEUE_PADDING_SIZE_SHARED
 #define CORE__TASK_WORK_QUEUE_PADDING_SIZE_SHARED    (CORE_TASK_L1_CACHELINE_SIZE-sizeof(void*)-sizeof(uint32_t)-sizeof(uint32_t)-sizeof(void*)-sizeof(size_t))
 #endif
+
+/* @summary For a given type, calculate the maximum number of bytes that will need to be allocated for an instance of that type, accounting for the padding required for proper alignment.
+ * @param _type A typename, such as int, specifying the type whose allocation size is being queried.
+ */
+#ifndef CORE__TaskAllocationSizeType
+#define CORE__TaskAllocationSizeType(_type)                                    \
+    ((sizeof(_type)) + (__alignof(_type)-1))
+#endif
+
+/* @summary For a given type, calculate the maximum number of bytes that will need to be allocated for an array of instances of that type, accounting for the padding required for proper alignment.
+ * @param _type A typename, such as int, specifying the type whose allocation size is being queried.
+ * @param _count The number of elements in the array.
+ */
+#ifndef CORE__TaskAllocationSizeArray
+#define CORE__TaskAllocationSizeArray(_type, _count)                           \
+    ((sizeof(_type) * (_count)) + (__alignof(_type)-1))
+#endif
+
+/* @summary Allocate host memory with the correct size and alignment for an instance of a given type from a memory arena.
+ * @param _arena The CORE__TASK_ARENA from which the allocation is being made.
+ * @param _type A typename, such as int, specifying the type being allocated.
+ * @return A pointer to the start of the allocated memory block, or NULL.
+ */
+#ifndef CORE__TaskMemoryArenaAllocateType
+#define CORE__TaskMemoryArenaAllocateType(_arena, _type)                       \
+    ((_type*) CORE__TaskMemoryArenaAllocateHost((_arena), sizeof(_type), __alignof(_type)))
+#endif
+
+/* @summary Allocate memory with the correct size and alignment for an array of instance of a given type from a memory arena.
+ * @param _arena The CORE__TASK_ARENA from which the allocation is being made.
+ * @param _type A typename, such as int, specifying the type being allocated.
+ * @param _count The number of elements in the array.
+ * @return A pointer to the start of the allocated memory block, or NULL.
+ */
+#ifndef CORE__TaskMemoryArenaAllocateArray
+#define CORE__TaskMemoryArenaAllocateArray(_arena, _type, _count)              \
+    ((_type*) CORE__TaskMemoryArenaAllocateHost((_arena), sizeof(_type) * (_count), __alignof(_type)))
+#endif
+
+/* @summary Define the data associated with an internal memory arena allocator.
+ */
+typedef struct _CORE__TASK_ARENA {
+    uint8_t                              *BaseAddress;            /* The base address of the memory range. */
+    size_t                                MemorySize;             /* The size of the memory block, in bytes. */
+    size_t                                NextOffset;             /* The offset of the next available address. */
+} CORE__TASK_ARENA;
+
+/* @summary Define the type used to mark a location within a memory arena.
+ */
+typedef size_t CORE__TASK_ARENA_MARKER;
 
 /* @summary Define the data associated with a single item in an MPMC concurrent queue.
  * These items store the zero-based index of a free task slot within the task pool.
@@ -443,8 +603,9 @@ typedef struct CORE_TASK_CACHELINE_ALIGN _CORE__TASK_WORK_QUEUE {
 } CORE__TASK_WORK_QUEUE;
 
 /* @summary Define the data tracked internally for each task. Aligned to and limited to one cacheline.
+ * Multiple threads may try to simultaneously read and write WaitCount, WorkCount, PermitCount and PermitIds.
  */
-typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_DATA {
+typedef struct CORE_TASK_CACHELINE_ALIGN _CORE__TASK_DATA {
     #define NUM_DATA                      CORE_MAX_TASK_DATA_BYTES
     #define NUM_PERMITS                   CORE_MAX_TASK_PERMITS
     int32_t                               WaitCount;              /* The number of tasks that must complete before this task can run. */
@@ -456,7 +617,28 @@ typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_DATA {
     CORE_TASK_ID                          PermitIds[NUM_PERMITS]; /* The task ID of each task permitted to run when this task completes. */
     #undef  NUM_PERMITS
     #undef  NUM_DATA
-} CORE_TASK_DATA;
+} CORE__TASK_DATA;
+
+/* @summary Define the data associated with a fixed-size, preallocated pool of tasks.
+ * The task pool is owned by a single thread. This thread can define tasks within the pool.
+ */
+typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_POOL {
+    CORE__TASK_FREE_QUEUE                 FreeTasks;              /* The MPSC queue of available task slots. The thread that owns the pool is the consumer; threads that execute tasks are the producers. */
+    CORE__TASK_WORK_QUEUE                 ReadyTasks;             /* The deque of ready-to-run task IDs. The thread that owns the pool may Push and Take; other threads may only Steal. */
+    CORE__TASK_SEMAPHORE                  Semaphore;              /* A semaphore used to sleep threads when there are no task data slots available. */
+    struct _CORE_TASK_POOL_STORAGE       *Storage;                /* The CORE_TASK_POOL_STORAGE that owns this pool. */
+    struct _CORE_TASK_POOL               *NextPool;               /* Pointer to the next pool in the free list. */
+    struct _CORE__TASK_DATA              *TaskData;               /* Storage for the task data items allocated to the pool. */
+    HANDLE                               *WorkerSet;              /* An array of WorkerCount I/O completion port handles used to wake worker threads when tasks are available to steal. */
+    uint32_t                              WorkerCount;            /* The number of worker threads that can receive notifications when tasks are available to steal from this pool. */
+    uint32_t                              NextWorker;             /* The zero-based index of the next worker thread to wake when tasks are available to steal from this pool. */
+    uint32_t                              Capacity;               /* The capacity of the pool, in tasks. This value is always a power of two. */
+    uint32_t                              ThreadId;               /* The operating system identifier of the thread that owns this task pool. */
+    uint32_t                              PoolIndex;              /* The zero-based index of the pool within the CORE_TASK_POOL_STORAGE. */
+    uint32_t                              PoolId;                 /* One of _CORE_TASK_POOL_ID acting as an identifier for the pool type. */
+    uint32_t                              PoolUsage;              /* One or more bitwise OR'd _CORE_TASK_POOL_USAGE flags. */
+    int32_t                               LastError;              /* One of _CORE_TASK_DEFINITION_ERROR */
+} CORE__TASK_POOL;
 
 /* @summary Define the supported memory ordering constraints for atomic operations.
  */
@@ -467,6 +649,93 @@ typedef enum _CORE__TASK_ATOMIC_ORDERING {
     CORE__TASK_ATOMIC_ORDERING_ACQ_REL   = 3,                /* Combine ACQUIRE and RELEASE semantics. Subsequent loads are not hoisted, preceeding stores are not sunk. */
     CORE__TASK_ATOMIC_ORDERING_SEQ_CST   = 4,                /* Enforce total ordering (sequential consistency) with all other SEQ_CST operations. */
 } CORE__TASK_ATOMIC_ORDERING;
+
+/* @summary Initialize a memory arena allocator around an externally-managed memory block.
+ * @param arena The memory arena allocator to initialize.
+ * @param memory A pointer to the start of the memory block to sub-allocate from.
+ * @param memory_size The size of the memory block, in bytes.
+ */
+static void
+CORE__TaskInitMemoryArena
+(
+    CORE__TASK_ARENA *arena, 
+    void            *memory,
+    size_t      memory_size
+)
+{
+    arena->BaseAddress =(uint8_t*) memory;
+    arena->MemorySize  = memory_size;
+    arena->NextOffset  = 0;
+}
+
+/* @summary Sub-allocate memory from an arena.
+ * @param arena The memory arena from which the memory will be allocated.
+ * @param size The minimum number of bytes to allocate.
+ * @param alignment The required alignment of the returned address, in bytes. This value must be zero, or a power-of-two.
+ * @return A pointer to the start of a memory block of at least size bytes, or NULL.
+ */
+static void*
+CORE__TaskMemoryArenaAllocateHost
+(
+    CORE__TASK_ARENA *arena, 
+    size_t             size, 
+    size_t        alignment
+)
+{
+    uintptr_t    base_address = (uintptr_t) arena->BaseAddress + arena->NextOffset;
+    uintptr_t aligned_address =  CORE_AlignUp(base_address, alignment);
+    size_t        align_bytes =  aligned_address - base_address;
+    size_t        alloc_bytes =  size + align_bytes;
+    size_t         new_offset =  arena->NextOffset + alloc_bytes;
+    if (new_offset < arena->MemorySize)
+    {   /* the arena can satisfy the allocation */
+        arena->NextOffset = new_offset;
+        return (void*) aligned_address;
+    }
+    else
+    {   /* the arena cannot satisfy the allocation */
+        return NULL;
+    }
+}
+
+/* @summary Retrieve a marker that can be used to reset a memory arena back to a given point.
+ * @param arena The memory arena allocator to query.
+ * @return A marker value that can roll back the allocator to its state at the time of the call, invalidating all allocations made from that point forward.
+ */
+static CORE__TASK_ARENA_MARKER
+CORE__TaskMemoryArenaMark
+(
+    CORE__TASK_ARENA *arena
+)
+{
+    return arena->NextOffset;
+}
+
+/* @summary Roll back a memory arena allocator to a given point in time.
+ * @param arena The memory arena allocator to roll back.
+ * @param marker A marker obtained by a prior call to the ArenaMark function, or 0 to invalidate all existing allocations made from the arena.
+ */
+static void
+CORE__TaskResetMemoryArenaToMarker
+(
+    CORE__TASK_ARENA        *arena,
+    CORE__TASK_ARENA_MARKER marker
+)
+{   assert(marker <= arena->NextOffset);
+    arena->NextOffset = marker;
+}
+
+/* @summary Invalidate all allocations made from a memory arena.
+ * @param arena The memory arena allocator to roll back.
+ */
+static void
+CORE__TaskResetMemoryArena
+(
+    CORE__TASK_ARENA *arena
+)
+{
+    arena->NextOffset = 0;
+}
 
 /* @summary Atomically load a 32-bit value from a memory location.
  * @param address The memory location to read. This address must be 32-bit aligned.
@@ -833,11 +1102,11 @@ CORE__TaskCreateSemaphore
     }
 }
 
-/* @summary Destroy a semaphore.
+/* @summary Free all resources associated with a semaphore.
  * @param sem The semaphore object to destroy.
  */
 static void
-CORE__TaskDestroySemaphore
+CORE__TaskDeleteSemaphore
 (
     CORE__TASK_SEMAPHORE *sem
 )
@@ -1469,6 +1738,370 @@ CORE_DeleteTaskProfiler
         profiler->Provider = NULL;
     }
 #endif
+}
+
+CORE_API(int)
+CORE_ValidateTaskPoolConfiguration
+(
+    CORE_TASK_POOL_INIT *type_configs,
+    int32_t             *type_results, 
+    uint32_t               type_count, 
+    int32_t            *global_result
+)
+{
+    uint32_t      i, j;
+    uint64_t num_pools = 0;
+    int   found_worker = 0;
+    int         result = 0; /* assume success */
+
+    if (type_configs == NULL)
+    {   assert(type_configs != NULL);
+        return -1;
+    }
+    if (type_results == NULL)
+    {   assert(type_results != NULL);
+        return -1;
+    }
+    if (global_result == NULL)
+    {   assert(global_result != NULL);
+        return -1;
+    }
+    if (type_count == 0)
+    {   assert(type_count > 0);
+       *global_result = CORE_TASK_POOL_VALIDATION_RESULT_NO_WORKER_ID;
+        return -1;
+    }
+    if (type_count > CORE_MAX_TASK_POOLS)
+    {   assert(type_count <= CORE_MAX_TASK_POOLS);
+       *global_result = CORE_TASK_POOL_VALIDATION_RESULT_TOO_MANY_POOLS;
+        return -1;
+    }
+    /* start out assuming no problems */
+   *global_result = CORE_TASK_POOL_VALIDATION_RESULT_SUCCESS;
+    for (i = 0; i < type_count; ++i)
+    {   /* start out assuming that the pool configuration is valid */
+        num_pools      += type_configs[i].PoolCount;
+        type_results[i] = CORE_TASK_POOL_VALIDATION_RESULT_SUCCESS;
+
+        if (type_configs[i].PoolId == CORE_TASK_POOL_ID_WORKER)
+        {   /* the one required pool ID is specified */
+            found_worker = 1;
+        }
+        if (type_configs[i].PoolCount > CORE_MAX_TASK_POOLS)
+        {   /* the PoolCount exceeds what can be addressed */
+            assert(type_configs[i].PoolCount <= CORE_MAX_TASK_POOLS);
+            type_results[i] = CORE_TASK_POOL_VALIDATION_RESULT_TOO_MANY_POOLS;
+            result = -1;
+        }
+        if (type_configs[i].MaxActiveTasks < CORE_MIN_TASKS_PER_POOL)
+        {   /* MaxActiveTasks specifies too small a value */
+            assert(type_configs[i].MaxActiveTasks >= CORE_MIN_TASKS_PER_POOL);
+            type_results[i] = CORE_TASK_POOL_VALIDATION_RESULT_TOO_FEW_TASKS;
+            result = -1;
+        }
+        if (type_configs[i].MaxActiveTasks > CORE_MAX_TASKS_PER_POOL)
+        {   /* MaxActiveTasks specifies too large a value */
+            assert(type_configs[i].MaxActiveTasks <= CORE_MAX_TASKS_PER_POOL);
+            type_results[i] = CORE_TASK_POOL_VALIDATION_RESULT_TOO_MANY_TASKS;
+            result = -1;
+        }
+        if ((type_configs[i].MaxActiveTasks & (type_configs[i].MaxActiveTasks-1)) != 0)
+        {   /* MaxActiveTasks must be a power-of-two */
+            assert((type_configs[i].MaxActiveTasks & (type_configs[i].MaxActiveTasks-1)) == 0);
+            type_results[i] = CORE_TASK_POOL_VALIDATION_RESULT_NOT_POWER_OF_TWO;
+            result = -1;
+        }
+        for (j = 0; j < type_count; ++j)
+        {
+            if (i != j && type_configs[i].PoolId == type_configs[j].PoolId)
+            {   /* the same PoolId is used for more than one pool configuration */
+                assert(type_configs[i].PoolId != type_configs[j].PoolId);
+                type_results[i] = CORE_TASK_POOL_VALIDATION_RESULT_DUPLICATE_ID;
+                result = -1;
+                break;
+            }
+        }
+    }
+    if (found_worker == 0)
+    {
+       *global_result = CORE_TASK_POOL_VALIDATION_RESULT_NO_WORKER_ID;
+        return -1;
+    }
+    if (num_pools > CORE_MAX_TASK_POOLS)
+    {
+       *global_result = CORE_TASK_POOL_VALIDATION_RESULT_TOO_MANY_POOLS;
+        return -1;
+    }
+    return result;
+}
+
+CORE_API(size_t)
+CORE_QueryTaskPoolStorageMemorySize
+(
+    CORE_TASK_POOL_INIT *type_configs, 
+    uint32_t               type_count
+)
+{
+    size_t  required_size = 0;
+    uint32_t   pool_count = 0;
+    uint32_t      i, j, n;
+    /* calculate the total number of task pools that will be allocated */
+    for (i = 0; i < type_count; ++i)
+    {
+        pool_count += type_configs[i].PoolCount;
+    }
+    /* calculate the amount of memory required for the public data in _CORE_TASK_POOL_STORAGE */
+    required_size += CORE__TaskAllocationSizeArray(uint32_t         , type_count); /* PoolTypeIds       */
+    required_size += CORE__TaskAllocationSizeArray(CORE__TASK_POOL* , type_count); /* PoolFreeList      */
+    required_size += CORE__TaskAllocationSizeArray(CRITICAL_SECTION , type_count); /* PoolFreeListLocks */
+    required_size += CORE__TaskAllocationSizeArray(CORE__TASK_POOL* , pool_count); /* TaskPools         */
+    /* calculate the amount of memory required for the private data in _CORE_TASK_POOL_STORAGE */
+    for (i = 0; i < type_count; ++i)
+    {
+        size_t pool_size = 0;
+        pool_size       += CORE__TaskAllocationSizeType(CORE__TASK_POOL);
+        pool_size       += CORE__QueryTaskFreeQueueMemorySize(type_configs[i].MaxActiveTasks);
+        pool_size       += CORE__QueryTaskWorkQueueMemorySize(type_configs[i].MaxActiveTasks);
+        pool_size       += CORE__TaskAllocationSizeArray(CORE__TASK_DATA, type_configs[i].MaxActiveTasks);
+        required_size   +=(pool_size * type_configs[i].PoolCount);
+    }
+    return required_size;
+}
+
+CORE_API(int)
+CORE_CreateTaskPoolStorage
+(
+    CORE_TASK_POOL_STORAGE   *storage, 
+    CORE_TASK_POOL_STORAGE_INIT *init
+)
+{
+    CORE__TASK_ARENA arena;
+    size_t   required_size = 0;
+    uint32_t    pool_index = 0;
+    uint32_t    pool_count = 0;
+    uint32_t    slot_count = 0;
+    uint32_t   next_worker = 0;
+    uint32_t    i, j, n, m;
+
+    if (init->PoolTypeCount == 0)
+    {   /* the storage object must have at least one pool type */
+        assert(init->PoolTypeCount > 0);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    if (init->MemoryStart == NULL || init->MemorySize == 0)
+    {   /* the caller must supply memory for the storage object data */
+        assert(init->MemoryStart != NULL);
+        assert(init->MemorySize > 0);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+
+    required_size = CORE_QueryTaskPoolStorageMemorySize(init->TaskPoolTypes, init->PoolTypeCount);
+    if (init->MemorySize < required_size)
+    {   /* the caller must supply sufficient memory for the storage object */
+        assert(init->MemorySize >= required_size);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+
+    /* calculate the total number of task pools that will be allocated */
+    for (i = 0, n = init->PoolTypeCount; i < n; ++i)
+    {
+        pool_count += init->TaskPoolTypes[i].PoolCount;
+        slot_count +=(init->TaskPoolTypes[i].PoolCount * init->TaskPoolTypes[i].MaxActiveTasks);
+    }
+
+    /* zero everything out and assign memory */
+    ZeroMemory(init->MemoryStart, init->MemorySize);
+    ZeroMemory(storage, sizeof(CORE_TASK_POOL_STORAGE));
+    CORE__TaskInitMemoryArena(&arena, init->MemoryStart, init->MemorySize);
+    storage->MemoryStart       = init->MemoryStart;
+    storage->MemorySize        = init->MemorySize;
+    storage->PoolTypeCount     = init->PoolTypeCount;
+    storage->TaskSlotCount     = slot_count;
+    storage->TaskPoolCount     = pool_count;
+    storage->Reserved          = 0;
+    storage->PoolTypeIds       = CORE__TaskMemoryArenaAllocateArray(&arena, uint32_t               , init->PoolTypeCount);
+    storage->PoolFreeList      = CORE__TaskMemoryArenaAllocateArray(&arena, struct _CORE_TASK_POOL*, init->PoolTypeCount);
+    storage->PoolFreeListLocks = CORE__TaskMemoryArenaAllocateArray(&arena, CRITICAL_SECTION       , init->PoolTypeCount);
+    storage->TaskPools         = CORE__TaskMemoryArenaAllocateArray(&arena, struct _CORE_TASK_POOL*, pool_count);
+    if (storage->PoolTypeIds == NULL || storage->PoolFreeList == NULL || storage->PoolFreeListLocks == NULL || storage->TaskPools == NULL)
+    {   /* insufficient memory - this implies an error in CORE_QueryTaskPoolStorageMemorySize */
+        ZeroMemory(storage, sizeof(CORE_TASK_POOL_STORAGE));
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    /* allocate and initialize the task pool objects themselves */
+    for (i = 0, n = init->PoolTypeCount; i < n; ++i)
+    {
+        size_t   free_size = CORE__QueryTaskFreeQueueMemorySize(init->TaskPoolTypes[i].MaxActiveTasks);
+        size_t   work_size = CORE__QueryTaskWorkQueueMemorySize(init->TaskPoolTypes[i].MaxActiveTasks);
+        uint32_t max_tasks = init->TaskPoolTypes[i].MaxActiveTasks;
+        /* initialize the type ID and critical section protecting the free list */
+        storage->PoolTypeIds[i]= init->TaskPoolTypes[i].PoolId;
+        InitializeCriticalSectionAndSpinCount(&storage->PoolFreeListLocks[i], 4096);
+        for (j = 0, m = init->TaskPoolTypes[i].PoolCount; j < m; ++j)
+        {   /* initialize the individual CORE__TASK_POOL object */
+            CORE__TASK_POOL *pool = CORE__TaskMemoryArenaAllocateType (&arena, CORE__TASK_POOL);
+            void        *task_mem = CORE__TaskMemoryArenaAllocateArray(&arena, CORE__TASK_DATA, max_tasks);
+            void        *free_mem = CORE__TaskMemoryArenaAllocateHost (&arena, free_size, CORE_AlignOf(uint32_t));
+            void        *work_mem = CORE__TaskMemoryArenaAllocateHost (&arena, work_size, CORE_AlignOf(CORE_TASK_ID));
+            if (pool == NULL || task_mem == NULL || free_mem == NULL || work_mem == NULL)
+            {   /* insufficient memory - this implies an error in CORE_QueryTaskPoolStorageMemorySize */
+                ZeroMemory(storage, sizeof(CORE_TASK_POOL_STORAGE));
+                SetLastError(ERROR_INVALID_PARAMETER);
+                return -1;
+            }
+            CORE__InitTaskFreeQueue(&pool->FreeTasks  , max_tasks, free_mem, free_size);
+            CORE__InitTaskWorkQueue(&pool->ReadyTasks , max_tasks, work_mem, work_size);
+            pool->Storage      = storage;
+            pool->NextPool     = storage->PoolFreeList[i];
+            pool->TaskData     =(CORE__TASK_DATA*)task_mem;
+            pool->WorkerSet    = init->WorkerSet;
+            pool->WorkerCount  = init->WorkerCount;
+            pool->NextWorker   = next_worker;
+            pool->Capacity     = max_tasks;
+            pool->ThreadId     = 0;
+            pool->PoolIndex    = pool_index;
+            pool->PoolId       = init->TaskPoolTypes[i].PoolId;
+            pool->PoolUsage    = init->TaskPoolTypes[i].PoolUsage;
+            pool->LastError    = 0;
+
+            /* push the pool onto the front of the free list */
+            storage->PoolFreeList[i] = pool;
+            /* push the pool into the back of the pool list */
+            storage->TaskPools[pool_index++] = pool;
+            if (init->WorkerCount > 0)
+            {   /* update the next worker index for the next pool */
+                next_worker = (next_worker + 1) % init->WorkerCount;
+            }
+        }
+    }
+    return 0;
+}
+
+CORE_API(void)
+CORE_DeleteTaskPoolStorage
+(
+    CORE_TASK_POOL_STORAGE *storage
+)
+{
+    uint32_t i, n;
+
+    if (storage->PoolTypeCount > 0)
+    {
+        for (i = 0, n = storage->PoolTypeCount; i < n; ++i)
+        {
+            DeleteCriticalSection(&storage->PoolFreeListLocks[i]);
+        }
+    }
+    if (storage->TaskPoolCount > 0)
+    {
+        for (i = 0, n = storage->TaskPoolCount; i < n; ++i)
+        {
+            CORE__TaskDeleteSemaphore(&storage->TaskPools[i]->Semaphore);
+        }
+    }
+}
+
+CORE_API(struct _CORE_TASK_POOL*)
+CORE_AcquireTaskPool
+(
+    CORE_TASK_POOL_STORAGE *storage, 
+    uint32_t           pool_type_id
+)
+{
+    CORE__TASK_POOL     *pool = NULL;
+    uint32_t    *pool_id_list = storage->PoolTypeIds;
+    uint32_t  pool_type_count = storage->PoolTypeCount;
+    uint32_t  pool_type_index = 0;
+    int       pool_type_found = 0;
+    uint32_t                i;
+
+    for (i = 0; i < pool_type_count; ++i)
+    {
+        if (pool_id_list[i] == pool_type_id)
+        {
+            pool_type_found  = 1;
+            pool_type_index  = i;
+            break;
+        }
+    }
+    if (pool_type_found)
+    {   /* attempt to pop a pool of the specified type from the free list */
+        EnterCriticalSection(&storage->PoolFreeListLocks[pool_type_index]);
+        {
+            if (storage->PoolFreeList[pool_type_index] != NULL)
+            {   /* the free list is non-empty - pop a node */
+                pool = storage->PoolFreeList[pool_type_index];
+                storage->PoolFreeList[pool_type_index] = pool->NextPool;
+            }
+        }
+        LeaveCriticalSection(&storage->PoolFreeListLocks[pool_type_index]);
+    }
+    if (pool != NULL)
+    {   /* a pool was successfully acquired - bind it to the calling thread */
+        CORE__InitTaskFreeQueue(&pool->FreeTasks  , pool->Capacity, pool->FreeTasks.MemoryStart , pool->FreeTasks.MemorySize);
+        CORE__InitTaskWorkQueue(&pool->ReadyTasks , pool->Capacity, pool->ReadyTasks.MemoryStart, pool->ReadyTasks.MemorySize);
+        CORE__TaskCreateSemaphore(&pool->Semaphore, pool->Capacity);
+        pool->NextPool  = NULL;
+        pool->ThreadId  = GetCurrentThreadId();
+        pool->LastError = 0;
+    }
+    return pool;
+}
+
+CORE_API(void)
+CORE_ReleaseTaskPool
+(
+    struct _CORE_TASK_POOL *pool
+)
+{
+    CORE_TASK_POOL_STORAGE *storage = NULL;
+    uint32_t          *pool_id_list = NULL;
+    uint32_t           pool_type_id = 0;
+    uint32_t        pool_type_count = 0;
+    uint32_t        pool_type_index = 0;
+    int             pool_type_found = 0;
+    uint32_t                      i;
+
+    if (pool == NULL)
+    {   assert(pool != NULL);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return;
+    }
+    if (pool->Storage == NULL)
+    {   assert(pool->Storage != NULL);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return;
+    }
+
+    /* locate the pool type in the storage object */
+    storage         = pool->Storage;
+    pool_type_id    = pool->PoolId;
+    pool_id_list    = storage->PoolTypeIds;
+    pool_type_count = storage->PoolTypeCount;
+    for (i = 0; i < pool_type_count; ++i)
+    {
+        if (pool_id_list[i] == pool_type_id)
+        {
+            pool_type_found  = 1;
+            pool_type_index  = i;
+            break;
+        }
+    }
+    if (pool_type_found)
+    {   /* free resources allocated to the pool on acquisition */
+        CORE__TaskDeleteSemaphore(&pool->Semaphore);
+        /* push the pool onto the front of the free list */
+        EnterCriticalSection(&storage->PoolFreeListLocks[pool_type_index]);
+        {
+            pool->NextPool = storage->PoolFreeList[pool_type_index];
+            storage->PoolFreeList[pool_type_index] = pool;
+        }
+        LeaveCriticalSection(&storage->PoolFreeListLocks[pool_type_index]);
+    }
 }
 
 #endif /* CORE_TASK_IMPLEMENTATION */
