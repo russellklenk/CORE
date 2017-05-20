@@ -208,14 +208,13 @@ struct _CV_MARKERSERIES;
 struct _CORE_TASK_CPU_INFO;
 struct _CORE_TASK_PROFILER;
 struct _CORE_TASK_PROFILER_SPAN;
-struct _CORE_TASK_DATA;
 struct _CORE_TASK_POOL;
 struct _CORE_TASK_POOL_INIT;
 struct _CORE_TASK_POOL_STORAGE;
 struct _CORE_TASK_POOL_STORAGE_INIT;
-struct _CORE_TASK_ENVIRONMENT;
-struct _CORE_TASK_SCHEDULER;
-struct _CORE_TASK_SCHEDULER_INIT;
+struct _CORE_TASK_WORKER_POOL;
+struct _CORE_TASK_WORKER_POOL_INIT;
+struct _CORE_TASK_STEAL_QUEUE;
 struct _CORE_TASK_FENCE;
 
 /* @summary Task identifiers are opaque 32-bit integers.
@@ -230,8 +229,7 @@ typedef uint32_t CORE_TASK_ID;
 typedef void   (*CORE_TaskMain_Func)
 (
     CORE_TASK_ID                      task_id, 
-    void                           *task_args, 
-    struct _CORE_TASK_ENVIRONMENT   *task_env
+    void                           *task_args
 );
 
 /* @summary Define information describing the CPU layout of the host system.
@@ -270,23 +268,22 @@ typedef struct _CORE_TASK_PROFILER_SPAN {
 typedef struct _CORE_TASK_POOL_INIT {
     uint32_t                         PoolId;                /* One of _CORE_TASK_POOL_ID, or any application-defined value unique within the task scheduler identifying the type of task pool. */
     uint32_t                         PoolCount;             /* The number of task pools of this type that will be used by the application. */
-    uint32_t                         PoolUsage;             /* One or more bitwise OR'd values of the _CORE_TASK_POOL_USAGE enumeration, defining how the thread(s) that own pool instances of this type will behave. */
+    uint32_t                         StealThreshold;        /* The number of tasks that can be defined within the pool without executing a task before the pool begins to post steal notifications. */
     uint32_t                         MaxActiveTasks;        /* The maximum number of simultaneously active tasks that can be defined within each pool of this type. This value must be a power-of-two. */
 } CORE_TASK_POOL_INIT;
 
 /* @summary Define the data representing a fixed set of task data pools (used for defining tasks).
  */
 typedef struct _CORE_TASK_POOL_STORAGE {
-    void                            *MemoryStart;           /* A pointer to the start of the memory block allocated for the storage array. */
-    uint64_t                         MemorySize;            /* The total size of the memory block allocated for the storage array. */
-    uint32_t                         PoolTypeCount;         /* The number of task pool types defined within the storage array. */
-    uint32_t                         TaskSlotCount;         /* The total number of task slots across all task pools. */
+    struct _CORE_TASK_POOL         **TaskPoolList;          /* Pointers to each task pool object. */
+    struct _CORE_TASK_STEAL_QUEUE   *StealQueue;            /* A blocking MPMC queue to which pools post notifications indicating that they have tasks available to steal. */
     uint32_t                         TaskPoolCount;         /* The total number of task pool objects. */
-    uint32_t                         Reserved;              /* Reserved for future use. Set to zero. */
+    uint32_t                         PoolTypeCount;         /* The number of task pool types defined within the storage array. */
     uint32_t                        *PoolTypeIds;           /* An array of PoolTypeCount values, where each value specifies the task pool ID. */
     struct _CORE_TASK_POOL         **PoolFreeList;          /* An array of PoolTypeCount pointers to the free list for each task pool ID. */
     CRITICAL_SECTION                *PoolFreeListLocks;     /* An array of PoolTypeCount critical sections protecting the free list for each task pool ID. */
-    struct _CORE_TASK_POOL         **TaskPools;             /* Pointers to each task pool object. */
+    void                            *MemoryStart;           /* A pointer to the start of the memory block allocated for the storage array. */
+    uint64_t                         MemorySize;            /* The total size of the memory block allocated for the storage array. */
 } CORE_TASK_POOL_STORAGE;
 
 /* @summary Define the attributes used to initialize a task pool storage container.
@@ -296,8 +293,7 @@ typedef struct _CORE_TASK_POOL_STORAGE_INIT {
     uint64_t                         MemorySize;            /* The total size of the memory block allocated for the storage array. */
     struct _CORE_TASK_POOL_INIT     *TaskPoolTypes;         /* An array of structures defining the types of task pools used by the application. */
     uint32_t                         PoolTypeCount;         /* The number of _CORE_TASK_POOL_INIT structures in TaskPoolTypes. */
-    uint32_t                         WorkerCount;           /* The number of worker threads that can be signaled to execute tasks. */
-    HANDLE                          *WorkerSet;             /* An array of WorkerCount I/O completion port handles to be signaled when tasks are available to steal. */
+    uint32_t                         StealQueueCapacity;    /* The maximum number of notifications that can be posted to the steal pool. */
 } CORE_TASK_POOL_STORAGE_INIT;
 
 /* @summary Define some identifiers that may be passed to CORE_MakeTaskId for the _type argument to make the code more readable.
@@ -534,12 +530,12 @@ typedef struct _CORE__TASK_ARENA {
 typedef size_t CORE__TASK_ARENA_MARKER;
 
 /* @summary Define the data associated with a single item in an MPMC concurrent queue.
- * These items store the zero-based index of a free task slot within the task pool.
+ * These items store the zero-based index of a free task slot within the task pool, or the zero-based index of a task pool that has tasks available to steal.
  */
-typedef struct _CORE__TASK_FREE_CELL {
+typedef struct _CORE__TASK_MPMC_CELL {
     uint32_t                              Sequence;               /* The sequence number assigned to the cell. */
-    uint32_t                              TaskIndex;              /* The value stored in the cell. This is the zero-based index of an available task slot. */
-} CORE__TASK_FREE_CELL;
+    uint32_t                              Index;                  /* The value stored in the cell. */
+} CORE__TASK_MPMC_CELL;
 
 /* @summary Define the data associated with a semaphore guaranteed to stay in userspace unless a thread needs to be downed or woken.
  */
@@ -562,7 +558,7 @@ typedef struct CORE_TASK_CACHELINE_ALIGN _CORE__TASK_FREE_QUEUE {
     #define PAD_SHARED                    CORE__TASK_FREE_QUEUE_PADDING_SIZE_SHARED
     #define PAD_ENQUEUE                   CORE__TASK_FREE_QUEUE_PADDING_SIZE_INDEX
     #define PAD_DEQUEUE                   CORE__TASK_FREE_QUEUE_PADDING_SIZE_INDEX
-    CORE__TASK_FREE_CELL                 *Storage;                /* Storage for queue items. Fixed-size, power-of-two capacity. */
+    CORE__TASK_MPMC_CELL                 *Storage;                /* Storage for queue items. Fixed-size, power-of-two capacity. */
     uint32_t                              StorageMask;            /* The mask used to map EnqueuePos and DequeuePos into the storage array. */
     uint32_t                              Capacity;               /* The maximum number of items that can be stored in the queue. */
     void                                 *MemoryStart;            /* The pointer to the start of the allocated memory block. */
@@ -601,6 +597,31 @@ typedef struct CORE_TASK_CACHELINE_ALIGN _CORE__TASK_WORK_QUEUE {
     #undef  PAD_PUBLIC
     #undef  PAD_PRIVATE
 } CORE__TASK_WORK_QUEUE;
+
+/* @summary Define the data associated with a fixed-size, MPMC concurrent queue. The queue capacity must be a power-of-two.
+ * The MPMC queue is used in an MPMC fashion to store notifications that a given task pool has tasks available to steal.
+ * The queue has an associated semaphore, so that threads with nothing to do can wait nicely until a task is potentially available.
+ * Aside from the blocking and semaphore behavior, the implementation is identical to the CORE__TASK_FREE_QUEUE.
+ */
+typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_STEAL_QUEUE {
+    #define PAD_SHARED                    CORE__TASK_FREE_QUEUE_PADDING_SIZE_SHARED
+    #define PAD_ENQUEUE                   CORE__TASK_FREE_QUEUE_PADDING_SIZE_INDEX
+    #define PAD_DEQUEUE                   CORE__TASK_FREE_QUEUE_PADDING_SIZE_INDEX
+    CORE__TASK_SEMAPHORE                  Semaphore;              /* The semaphore used to put threads to sleep or wake them up. */
+    CORE__TASK_MPMC_CELL                 *Storage;                /* Storage for queue items. Fixed-size, power-of-two capacity. */
+    uint32_t                              StorageMask;            /* The mask used to map EnqueuePos and DequeuePos into the storage array. */
+    uint32_t                              Capacity;               /* The maximum number of items that can be stored in the queue. */
+    void                                 *MemoryStart;            /* The pointer to the start of the allocated memory block. */
+    size_t                                MemorySize;             /* The size of the allocated memory block, in bytes. */
+    uint8_t                               Pad0[PAD_SHARED];       /* Padding separating shared data from producer-only data. */
+    uint32_t                              EnqueuePos;             /* A monotonically-increasing integer representing the position of the next enqueue operation. */
+    uint8_t                               Pad1[PAD_ENQUEUE];      /* Padding separating the producer-only data from the consumer-only data. */
+    uint32_t                              DequeuePos;             /* A monotonically-increasing integer representing the position of the next dequeue operation. */
+    uint8_t                               Pad2[PAD_DEQUEUE];      /* Padding separating the consumer-only data from adjacent data. */
+    #undef  PAD_SHARED
+    #undef  PAD_ENQUEUE
+    #undef  PAD_DEQUEUE
+} CORE__TASK_STEAL_QUEUE;
 
 /* @summary Define the data tracked internally for each task. Aligned to and limited to one cacheline.
  * Multiple threads may try to simultaneously read and write WaitCount, WorkCount, PermitCount and PermitIds.
@@ -1082,16 +1103,23 @@ CORE__TaskAtomicCompareAndSwap_s64
 /* @summary Create a semaphore and initialize it with the specified number of available resources.
  * @param sem The semaphore object to initialize.
  * @param count The number of available resources.
+ * @param max_value The maximum number of available resources, or zero to specify the maximum possible value.
  * @return Zero if the semaphore is successfully initialized, or -1 if an error occurred.
  */
 static int
 CORE__TaskCreateSemaphore
 (
     CORE__TASK_SEMAPHORE *sem, 
-    int32_t             count
+    int32_t             count, 
+    int32_t         max_value
 )
 {
-    if ((sem->Semaphore = CreateSemaphore(NULL, 0, LONG_MAX, NULL)) != NULL)
+    LONG maxv = max_value;
+    if (maxv == 0)
+    {   /* use the maximum possible value */
+        maxv  = LONG_MAX;
+    }
+    if ((sem->Semaphore = CreateSemaphore(NULL, 0, maxv, NULL)) != NULL)
     {   /* the semaphore is successfully initialized */
         sem->Count = count;
         return  0;
@@ -1224,7 +1252,7 @@ CORE__QueryTaskFreeQueueMemorySize
 )
 {   assert(capacity >= 2); /* minimum capacity is 2 */
     assert((capacity & (capacity-1)) == 0); /* must be a power-of-two */
-    return (capacity * sizeof(CORE__TASK_FREE_CELL));
+    return (capacity * sizeof(CORE__TASK_MPMC_CELL));
 }
 
 /* @summary Initialize a multi-producer, multi-consumer concurrent queue of available task slot indices.
@@ -1257,15 +1285,15 @@ CORE__InitTaskFreeQueue
         ZeroMemory(fifo, sizeof(CORE__TASK_FREE_QUEUE));
         return -1;
     }
-    if (memory_size < (capacity * sizeof(CORE__TASK_FREE_CELL)))
+    if (memory_size < (capacity * sizeof(CORE__TASK_MPMC_CELL)))
     {   /* the caller did not supply enough memory */
-        assert(memory_size >= (capacity * sizeof(CORE__TASK_FREE_CELL)));
+        assert(memory_size >= (capacity * sizeof(CORE__TASK_MPMC_CELL)));
         ZeroMemory(fifo, sizeof(CORE__TASK_FREE_QUEUE));
         return -1;
     }
 
     ZeroMemory(fifo, sizeof(CORE__TASK_FREE_QUEUE));
-    fifo->Storage     =(CORE__TASK_FREE_CELL*) memory;
+    fifo->Storage     =(CORE__TASK_MPMC_CELL*) memory;
     fifo->StorageMask =(uint32_t) (capacity-1);
     fifo->Capacity    = capacity;
     fifo->MemoryStart = memory;
@@ -1273,7 +1301,7 @@ CORE__InitTaskFreeQueue
     for (i = 0; i < capacity; ++i)
     {   /* set the sequence number for each cell */
         CORE__TaskAtomicStore_u32(&fifo->Storage[i].Sequence, i, CORE__TASK_ATOMIC_ORDERING_RELAXED);
-        fifo->Storage[i].TaskIndex = i;
+        fifo->Storage[i].Index = i;
     }
     CORE__TaskAtomicStore_u32(&fifo->EnqueuePos, 0, CORE__TASK_ATOMIC_ORDERING_RELAXED);
     CORE__TaskAtomicStore_u32(&fifo->DequeuePos, 0, CORE__TASK_ATOMIC_ORDERING_RELAXED);
@@ -1292,8 +1320,8 @@ CORE__TaskFreeQueuePush
     uint32_t         task_index
 )
 {
-    CORE__TASK_FREE_CELL *cell;
-    CORE__TASK_FREE_CELL *stor = fifo->Storage;
+    CORE__TASK_MPMC_CELL *cell;
+    CORE__TASK_MPMC_CELL *stor = fifo->Storage;
     uint32_t              mask = fifo->StorageMask;
     uint32_t               pos = CORE__TaskAtomicLoad_u32(&fifo->EnqueuePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
     uint32_t               seq;
@@ -1319,7 +1347,7 @@ CORE__TaskFreeQueuePush
             pos = CORE__TaskAtomicLoad_u32(&fifo->EnqueuePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
         }
     }
-    cell->TaskIndex = task_index;
+    cell->Index = task_index;
     CORE__TaskAtomicStore_u32(&cell->Sequence, pos + 1, CORE__TASK_ATOMIC_ORDERING_RELEASE);
     return 1;
 }
@@ -1351,8 +1379,8 @@ CORE__TaskFreeQueueTake
     uint32_t        *task_index
 )
 {
-    CORE__TASK_FREE_CELL *cell;
-    CORE__TASK_FREE_CELL *stor = fifo->Storage;
+    CORE__TASK_MPMC_CELL *cell;
+    CORE__TASK_MPMC_CELL *stor = fifo->Storage;
     uint32_t              mask = fifo->StorageMask;
     uint32_t               pos = CORE__TaskAtomicLoad_u32(&fifo->DequeuePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
     uint32_t               seq;
@@ -1378,7 +1406,7 @@ CORE__TaskFreeQueueTake
             pos = CORE__TaskAtomicLoad_u32(&fifo->DequeuePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
         }
     }
-   *task_index = cell->TaskIndex;
+   *task_index = cell->Index;
     CORE__TaskAtomicStore_u32(&cell->Sequence, pos + mask + 1, CORE__TASK_ATOMIC_ORDERING_RELEASE);
     return 1;
 }
@@ -1553,6 +1581,181 @@ CORE__TaskWorkQueueSteal
        *task_id = CORE_INVALID_TASK_ID;
         return 0;
     }
+}
+
+/* @summary Calculate the amount of memory required for an MPMC concurrent queue of task pool indices of a given capacity.
+ * @param capacity The capacity of the queue. This value must be a power-of-two greater than 2.
+ * @return The minimum number of bytes required to successfully initialize a queue with the specified capacity.
+ */
+static size_t
+CORE__QueryTaskStealQueueMemorySize
+(
+    uint32_t capacity
+)
+{   assert(capacity >= 2); /* minimum capacity is 2 */
+    assert((capacity & (capacity-1)) == 0); /* must be a power-of-two */
+    return (capacity * sizeof(CORE__TASK_MPMC_CELL));
+}
+
+/* @summary Initialize a multi-producer, multi-consumer concurrent queue of task pool indices.
+ * @param fifo The MPMC queue object to initialize.
+ * @param capacity The capacity of the queue. This value must be a power-of-two greater than 2.
+ * @param memory The memory block to use for the queue storage.
+ * @param memory_size The size of the memory block to use for the queue storage. This value must be at least the size returned by CORE__QueryTaskFreeQueueMemorySize(capacity).
+ * @return Zero if the queue is successfully initialized, or non-zero if an error occurred.
+ */
+static int
+CORE__InitTaskStealQueue
+(
+    CORE__TASK_STEAL_QUEUE *fifo,
+    uint32_t            capacity, 
+    void                 *memory, 
+    size_t           memory_size
+)
+{
+    uint32_t i;
+
+    if (capacity < 2)
+    {   /* the minimum supported capacity is two elements */
+        assert(capacity >= 2);
+        ZeroMemory(fifo, sizeof(CORE__TASK_STEAL_QUEUE));
+        return -1;
+    }
+    if ((capacity & (capacity-1)) != 0)
+    {   /* the capacity must be a power-of-two */
+        assert((capacity & (capacity-1)) == 0);
+        ZeroMemory(fifo, sizeof(CORE__TASK_STEAL_QUEUE));
+        return -1;
+    }
+    if (memory_size < (capacity * sizeof(CORE__TASK_MPMC_CELL)))
+    {   /* the caller did not supply enough memory */
+        assert(memory_size >= (capacity * sizeof(CORE__TASK_MPMC_CELL)));
+        ZeroMemory(fifo, sizeof(CORE__TASK_STEAL_QUEUE));
+        return -1;
+    }
+
+    /* initialize the semaphore used to sleep threads when the queue is empty, 
+     * and wake sleeping threads when the queue becomes non-empty. the semaphore
+     * is initially empty.
+     */
+    if (CORE__TaskCreateSemaphore(&fifo->Semaphore, 0, capacity) < 0)
+    {   /* the semaphore could not be initialized */
+        ZeroMemory(fifo, sizeof(CORE__TASK_STEAL_QUEUE));
+        return -1;
+    }
+
+    ZeroMemory(fifo, sizeof(CORE__TASK_STEAL_QUEUE));
+    fifo->Storage     =(CORE__TASK_MPMC_CELL*) memory;
+    fifo->StorageMask =(uint32_t) (capacity-1);
+    fifo->Capacity    = capacity;
+    fifo->MemoryStart = memory;
+    fifo->MemorySize  = memory_size;
+    for (i = 0; i < capacity; ++i)
+    {   /* set the sequence number for each cell */
+        CORE__TaskAtomicStore_u32(&fifo->Storage[i].Sequence, i, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+        fifo->Storage[i].Index = i;
+    }
+    CORE__TaskAtomicStore_u32(&fifo->EnqueuePos, 0, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+    CORE__TaskAtomicStore_u32(&fifo->DequeuePos, 0, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+    return 0;
+}
+
+/* @summary Push a task pool index onto the back of a steal queue, and signal the semaphore to indicate that a resource is available. This function should be called by the thread that defines the task.
+ * @param fifo The MPMC concurrent queue to receive the value.
+ * @param pool_index The task pool index that has a task available to steal.
+ * @return Non-zero if the value was enqueued, or zero if the queue is currently full.
+ */
+static int
+CORE__TaskStealQueuePush
+(
+    CORE__TASK_STEAL_QUEUE *fifo, 
+    uint32_t          pool_index
+)
+{
+    CORE__TASK_MPMC_CELL *cell;
+    CORE__TASK_MPMC_CELL *stor = fifo->Storage;
+    uint32_t              mask = fifo->StorageMask;
+    uint32_t               pos = CORE__TaskAtomicLoad_u32(&fifo->EnqueuePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+    uint32_t               seq;
+    int64_t               diff;
+    for ( ; ; )
+    {
+        cell = &stor[pos & mask];
+        seq  = CORE__TaskAtomicLoad_u32(&cell->Sequence, CORE__TASK_ATOMIC_ORDERING_ACQUIRE);
+        diff =(int64_t) seq - (int64_t) pos;
+        if (diff == 0)
+        {   /* the queue is not full, attempt to claim this slot */
+            if (CORE__TaskAtomicCompareAndSwap_u32(&fifo->EnqueuePos, &pos, pos + 1, 1, CORE__TASK_ATOMIC_ORDERING_RELAXED, CORE__TASK_ATOMIC_ORDERING_RELAXED))
+            {   /* the slot was successfully claimed */
+                break;
+            }
+        }
+        else if (diff < 0)
+        {   /* the queue is full */
+            return 0;
+        }
+        else
+        {   /* another producer claimed this slot, try again */
+            pos = CORE__TaskAtomicLoad_u32(&fifo->EnqueuePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+        }
+    }
+    cell->Index = pool_index;
+    CORE__TaskAtomicStore_u32(&cell->Sequence, pos + 1, CORE__TASK_ATOMIC_ORDERING_RELEASE);
+    CORE__TaskSemaphorePost(&fifo->Semaphore);
+    return 1;
+}
+
+/* @summary Attempt to take a value from the front of a steal queue. This function should be called by any thread that has run out of tasks in its local ready-to-run queue.
+ * If the steal queue is empty, the calling thread blocks until items are available to steal from another thread.
+ * @param fifo The MPMC concurrent queue from which the oldest value should be retrieved.
+ * @param pool_index If the function returns non-zero, on return, this location stores the dequeued task pool index value.
+ * @return Non-zero if a value was dequeued, or zero if the caller should try again.
+ */
+static int
+CORE__TaskStealQueueTake
+(
+    CORE__TASK_STEAL_QUEUE *fifo, 
+    uint32_t         *pool_index
+)
+{
+    CORE__TASK_MPMC_CELL *cell;
+    CORE__TASK_MPMC_CELL *stor = fifo->Storage;
+    uint32_t              mask = fifo->StorageMask;
+    uint32_t               pos;
+    uint32_t               seq;
+    int64_t               diff;
+
+    /* attempt to claim a resource from the semaphore. 
+     * if the thread does not block, the queue is non-empty.
+     */
+    CORE__TaskSemaphoreWait(&fifo->Semaphore, 4096);
+
+    /* dequeue an item from the front of the queue */
+    pos = CORE__TaskAtomicLoad_u32(&fifo->DequeuePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+    for ( ; ; )
+    {
+        cell = &stor[pos & mask];
+        seq  = CORE__TaskAtomicLoad_u32(&cell->Sequence, CORE__TASK_ATOMIC_ORDERING_ACQUIRE);
+        diff =(int64_t) seq - (int64_t)(pos + 1);
+        if (diff == 0)
+        {   /* the queue is not empty, attempt to claim this slot */
+            if (CORE__TaskAtomicCompareAndSwap_u32(&fifo->DequeuePos, &pos, pos + 1, 1, CORE__TASK_ATOMIC_ORDERING_RELAXED, CORE__TASK_ATOMIC_ORDERING_RELAXED))
+            {   /* the slot was successfully claimed */
+                break;
+            }
+        }
+        else if (diff < 0)
+        {   /* the queue is empty */
+            return 0;
+        }
+        else
+        {   /* another consumer claimed this slot, try again */
+            pos = CORE__TaskAtomicLoad_u32(&fifo->DequeuePos, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+        }
+    }
+   *pool_index = cell->Index;
+    CORE__TaskAtomicStore_u32(&cell->Sequence, pos + mask + 1, CORE__TASK_ATOMIC_ORDERING_RELEASE);
+    return 1;
 }
 
 /* @summary Implement a replacement for the strcmp function.
@@ -1851,10 +2054,12 @@ CORE_QueryTaskPoolStorageMemorySize
         pool_count += type_configs[i].PoolCount;
     }
     /* calculate the amount of memory required for the public data in _CORE_TASK_POOL_STORAGE */
+    required_size += CORE__TaskAllocationSizeType (CORE__TASK_STEAL_QUEUE);        /* TaskStealQueue    */
+    required_size += CORE__TaskAllocationSizeArray(CORE__TASK_POOL* , pool_count); /* TaskPoolList      */
     required_size += CORE__TaskAllocationSizeArray(uint32_t         , type_count); /* PoolTypeIds       */
     required_size += CORE__TaskAllocationSizeArray(CORE__TASK_POOL* , type_count); /* PoolFreeList      */
     required_size += CORE__TaskAllocationSizeArray(CRITICAL_SECTION , type_count); /* PoolFreeListLocks */
-    required_size += CORE__TaskAllocationSizeArray(CORE__TASK_POOL* , pool_count); /* TaskPools         */
+    required_size += CORE__QueryTaskStealQueueMemorySize(65536);                   /* TaskStealQueue    */
     /* calculate the amount of memory required for the private data in _CORE_TASK_POOL_STORAGE */
     for (i = 0; i < type_count; ++i)
     {
@@ -1876,11 +2081,12 @@ CORE_CreateTaskPoolStorage
 )
 {
     CORE__TASK_ARENA arena;
+    void        *steal_mem = NULL;
+    size_t      steal_size = 0;
     size_t   required_size = 0;
     uint32_t    pool_index = 0;
     uint32_t    pool_count = 0;
     uint32_t    slot_count = 0;
-    uint32_t   next_worker = 0;
     uint32_t    i, j, n, m;
 
     if (init->PoolTypeCount == 0)
@@ -1919,17 +2125,24 @@ CORE_CreateTaskPoolStorage
     storage->MemoryStart       = init->MemoryStart;
     storage->MemorySize        = init->MemorySize;
     storage->PoolTypeCount     = init->PoolTypeCount;
-    storage->TaskSlotCount     = slot_count;
     storage->TaskPoolCount     = pool_count;
-    storage->Reserved          = 0;
+    steal_size                 = CORE__QueryTaskStealQueueMemorySize(init->StealQueueCapacity);
+    storage->StealQueue        = CORE__TaskMemoryArenaAllocateType (&arena, CORE__TASK_STEAL_QUEUE);
+    steal_mem                  = CORE__TaskMemoryArenaAllocateHost (&arena, steal_size, CORE_AlignOf(uint32_t));
+    storage->TaskPoolList      = CORE__TaskMemoryArenaAllocateArray(&arena, struct _CORE_TASK_POOL*, pool_count);
     storage->PoolTypeIds       = CORE__TaskMemoryArenaAllocateArray(&arena, uint32_t               , init->PoolTypeCount);
     storage->PoolFreeList      = CORE__TaskMemoryArenaAllocateArray(&arena, struct _CORE_TASK_POOL*, init->PoolTypeCount);
     storage->PoolFreeListLocks = CORE__TaskMemoryArenaAllocateArray(&arena, CRITICAL_SECTION       , init->PoolTypeCount);
-    storage->TaskPools         = CORE__TaskMemoryArenaAllocateArray(&arena, struct _CORE_TASK_POOL*, pool_count);
-    if (storage->PoolTypeIds == NULL || storage->PoolFreeList == NULL || storage->PoolFreeListLocks == NULL || storage->TaskPools == NULL)
+    if (storage->PoolTypeIds == NULL || storage->PoolFreeList == NULL || storage->PoolFreeListLocks == NULL || storage->TaskPoolList == NULL || storage->StealQueue == NULL || steal_mem == NULL)
     {   /* insufficient memory - this implies an error in CORE_QueryTaskPoolStorageMemorySize */
         ZeroMemory(storage, sizeof(CORE_TASK_POOL_STORAGE));
         SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    /* initialize the steal queue for the storage pool */
+    if (CORE__InitTaskStealQueue(storage->StealQueue, init->StealQueueCapacity, steal_mem, steal_size) < 0)
+    {   /* failed to initialize the steal queue */
+        ZeroMemory(storage, sizeof(CORE_TASK_POOL_STORAGE));
         return -1;
     }
     /* allocate and initialize the task pool objects themselves */
@@ -1958,24 +2171,16 @@ CORE_CreateTaskPoolStorage
             pool->Storage      = storage;
             pool->NextPool     = storage->PoolFreeList[i];
             pool->TaskData     =(CORE__TASK_DATA*)task_mem;
-            pool->WorkerSet    = init->WorkerSet;
-            pool->WorkerCount  = init->WorkerCount;
-            pool->NextWorker   = next_worker;
             pool->Capacity     = max_tasks;
             pool->ThreadId     = 0;
             pool->PoolIndex    = pool_index;
             pool->PoolId       = init->TaskPoolTypes[i].PoolId;
-            pool->PoolUsage    = init->TaskPoolTypes[i].PoolUsage;
             pool->LastError    = 0;
 
             /* push the pool onto the front of the free list */
             storage->PoolFreeList[i] = pool;
             /* push the pool into the back of the pool list */
-            storage->TaskPools[pool_index++] = pool;
-            if (init->WorkerCount > 0)
-            {   /* update the next worker index for the next pool */
-                next_worker = (next_worker + 1) % init->WorkerCount;
-            }
+            storage->TaskPoolList[pool_index++] = pool;
         }
     }
     return 0;
@@ -1989,6 +2194,9 @@ CORE_DeleteTaskPoolStorage
 {
     uint32_t i, n;
 
+    if (storage->StealQueue != NULL)
+    {   /* TODO: delete the semaphore */
+    }
     if (storage->PoolTypeCount > 0)
     {
         for (i = 0, n = storage->PoolTypeCount; i < n; ++i)
@@ -2000,7 +2208,7 @@ CORE_DeleteTaskPoolStorage
     {
         for (i = 0, n = storage->TaskPoolCount; i < n; ++i)
         {
-            CORE__TaskDeleteSemaphore(&storage->TaskPools[i]->Semaphore);
+            CORE__TaskDeleteSemaphore(&storage->TaskPoolList[i]->Semaphore);
         }
     }
 }
@@ -2044,7 +2252,7 @@ CORE_AcquireTaskPool
     {   /* a pool was successfully acquired - bind it to the calling thread */
         CORE__InitTaskFreeQueue(&pool->FreeTasks  , pool->Capacity, pool->FreeTasks.MemoryStart , pool->FreeTasks.MemorySize);
         CORE__InitTaskWorkQueue(&pool->ReadyTasks , pool->Capacity, pool->ReadyTasks.MemoryStart, pool->ReadyTasks.MemorySize);
-        CORE__TaskCreateSemaphore(&pool->Semaphore, pool->Capacity);
+        CORE__TaskCreateSemaphore(&pool->Semaphore, pool->Capacity, 0);
         pool->NextPool  = NULL;
         pool->ThreadId  = GetCurrentThreadId();
         pool->LastError = 0;
