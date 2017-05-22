@@ -219,7 +219,7 @@ CORE_QueryHttpSystemDefaultProxyConfig
                 { config->ProxyType = CORE_HTTP_PROXY_TYPE_NAMED;
                 } break;
             default:
-                { assert(false && "Unsupported proxy type");
+                { assert(0 && "Unsupported proxy type");
                   config->ProxyType = CORE_HTTP_PROXY_TYPE_DISABLED;
                 } break;
         }
@@ -355,7 +355,7 @@ CORE_InitHttpSystem
               proxy_bypass = init->ProxyConfig->ProxyBypass;
             } break;
         default:
-            { assert(false && "Unsupported proxy type");
+            { assert(0 && "Unsupported proxy type");
             } goto cleanup_and_fail;
     }
     /* open the WinHttp session and set all of the global options */

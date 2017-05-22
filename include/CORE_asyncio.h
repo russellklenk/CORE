@@ -579,7 +579,7 @@ CORE__AsyncIoGetOverlappedResult
         *flags = 0;
         return r;
     }
-    assert(false && "CORE__AsyncIoGetOverlappedResult called for request with invalid type");
+    assert(0 && "CORE__AsyncIoGetOverlappedResult called for request with invalid type");
     SetLastError(ERROR_NOT_SUPPORTED);
     *error = ERROR_NOT_SUPPORTED;
     *flags = 0;
@@ -1089,7 +1089,7 @@ CORE__AsyncIoThreadMain
                                 } break;
                             default:
                                 { /* received a request object with unknown state - drop it */
-                                  assert(false && "I/O request object has unknown state value");
+                                  assert(0 && "I/O request object has unknown state value");
                                 } break;
                         }
                     } while (req != NULL);
