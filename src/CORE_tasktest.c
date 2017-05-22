@@ -80,9 +80,9 @@
 //   Internal Functions   //
 //////////////////////////*/
 static int
-ResetFreeQueue
+ResetMPMCQueue
 (
-    CORE__TASK_FREE_QUEUE *freeq, 
+    CORE__TASK_MPMC_QUEUE *freeq, 
     uint32_t            capacity, 
     void                 *memory, 
     size_t           memory_size, 
@@ -90,13 +90,13 @@ ResetFreeQueue
 )
 {   /* initialize the memory to a known byte pattern */
     memset(memory, default_char, memory_size);
-    return CORE__InitTaskFreeQueue(freeq, capacity, memory, memory_size);
+    return CORE__InitTaskMPMCQueue(freeq, capacity, memory, memory_size);
 }
 
 static int
-ResetWorkQueue
+ResetSPMCQueue
 (
-    CORE__TASK_WORK_QUEUE *workq, 
+    CORE__TASK_SPMC_QUEUE *workq, 
     uint32_t            capacity, 
     void                 *memory, 
     size_t           memory_size, 
@@ -104,25 +104,25 @@ ResetWorkQueue
 )
 {   /* initialize the memory to a known byte pattern */
     memset(memory, default_char, memory_size);
-    return CORE__InitTaskWorkQueue(workq, capacity, memory, memory_size);
+    return CORE__InitTaskSPMCQueue(workq, capacity, memory, memory_size);
 }
 
 static int
-EnsureFreeQueueMeetsCapacity
+EnsureMPMCQueueMeetsCapacity
 (
-    CORE__TASK_FREE_QUEUE *freeq
+    CORE__TASK_MPMC_QUEUE *freeq
 )
 {
     uint32_t i = 0;
     uint32_t n = freeq->Capacity;
     int    res = 0;
 
-    ConsoleOutput("CORE__TASK_FREE_QUEUE: Can push Capacity (%u) items successfully: ", n);
-    ResetFreeQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
-    /* make sure that CORE__TaskFreeQueuePush of the same item Capacity times succeeds */
+    ConsoleOutput("CORE__TASK_MPMC_QUEUE: Can push Capacity (%u) items successfully: ", n);
+    ResetMPMCQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    /* make sure that CORE__TaskMPMCQueuePush of the same item Capacity times succeeds */
     for (i = 0; i < n; ++i)
     {
-        if (CORE__TaskFreeQueuePush(freeq, 'A') == 0)
+        if (CORE__TaskMPMCQueuePush(freeq, 'A') == 0)
         {   /* a push failed; this is unexpected */
             res = -1;
         }
@@ -133,23 +133,23 @@ EnsureFreeQueueMeetsCapacity
 }
 
 static int
-EnsureFreeQueueCannotExceedCapacity
+EnsureMPMCQueueCannotExceedCapacity
 (
-    CORE__TASK_FREE_QUEUE *freeq
+    CORE__TASK_MPMC_QUEUE *freeq
 )
 {
     uint32_t i = 0;
     uint32_t n = freeq->Capacity;
     int    res = 0;
 
-    ConsoleOutput("CORE__TASK_FREE_QUEUE: Cannot exceed Capacity (%u) items        : ", n);
-    ResetFreeQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
-    /* make sure that CORE__TaskFreeQueuePush of the same item Capacity times succeeds */
+    ConsoleOutput("CORE__TASK_MPMC_QUEUE: Cannot exceed Capacity (%u) items        : ", n);
+    ResetMPMCQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    /* make sure that CORE__TaskMPMCQueuePush of the same item Capacity times succeeds */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskFreeQueuePush(freeq, 'A');
+        CORE__TaskMPMCQueuePush(freeq, 'A');
     }
-    if (CORE__TaskFreeQueuePush(freeq, 'B') != 0)
+    if (CORE__TaskMPMCQueuePush(freeq, 'B') != 0)
         res = -1;
     if (res == 0) ConsoleOutput("PASS.\n");
     else          ConsoleOutput("FAIL.\n");
@@ -157,17 +157,17 @@ EnsureFreeQueueCannotExceedCapacity
 }
 
 static int
-EnsureFreeQueueTakeFailsWhenEmpty
+EnsureMPMCQueueTakeFailsWhenEmpty
 (
-    CORE__TASK_FREE_QUEUE *freeq
+    CORE__TASK_MPMC_QUEUE *freeq
 )
 {
     uint32_t v = 0;
     int    res = 0;
 
-    ConsoleOutput("CORE__TASK_FREE_QUEUE: Cannot take from empty queue                : ");
-    ResetFreeQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
-    if (CORE__TaskFreeQueueTake(freeq, &v) != 0)
+    ConsoleOutput("CORE__TASK_MPMC_QUEUE: Cannot take from empty queue                : ");
+    ResetMPMCQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    if (CORE__TaskMPMCQueueTake(freeq, &v) != 0)
         res = -1;
     if (res == 0) ConsoleOutput("PASS.\n");
     else          ConsoleOutput("FAIL.\n");
@@ -175,9 +175,9 @@ EnsureFreeQueueTakeFailsWhenEmpty
 }
 
 static int
-EnsureFreeQueueCanDrain
+EnsureMPMCQueueCanDrain
 (
-    CORE__TASK_FREE_QUEUE *freeq
+    CORE__TASK_MPMC_QUEUE *freeq
 )
 {
     uint32_t i = 0;
@@ -185,17 +185,17 @@ EnsureFreeQueueCanDrain
     uint32_t v = 0;
     int    res = 0;
 
-    ConsoleOutput("CORE__TASK_FREE_QUEUE: Can drain a full queue                      : ");
-    ResetFreeQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    ConsoleOutput("CORE__TASK_MPMC_QUEUE: Can drain a full queue                      : ");
+    ResetMPMCQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
     /* fill the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskFreeQueuePush(freeq, 'A');
+        CORE__TaskMPMCQueuePush(freeq, 'A');
     }
     /* drain the queue */
     for (i = 0; i < n; ++i)
     {
-        if (CORE__TaskFreeQueueTake(freeq, &v) == 0)
+        if (CORE__TaskMPMCQueueTake(freeq, &v) == 0)
         {   /* a take failed - this is unexpected */
             res = -1;
         }
@@ -206,9 +206,9 @@ EnsureFreeQueueCanDrain
 }
 
 static int
-EnsureFreeQueueTakeFailsWhenDrained
+EnsureMPMCQueueTakeFailsWhenDrained
 (
-    CORE__TASK_FREE_QUEUE *freeq
+    CORE__TASK_MPMC_QUEUE *freeq
 )
 {
     uint32_t i = 0;
@@ -216,19 +216,19 @@ EnsureFreeQueueTakeFailsWhenDrained
     uint32_t v = 0;
     int    res = 0;
 
-    ConsoleOutput("CORE__TASK_FREE_QUEUE: Cannot take from drained queue              : ");
-    ResetFreeQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    ConsoleOutput("CORE__TASK_MPMC_QUEUE: Cannot take from drained queue              : ");
+    ResetMPMCQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
     /* fill the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskFreeQueuePush(freeq, 'A');
+        CORE__TaskMPMCQueuePush(freeq, 'A');
     }
     /* drain the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskFreeQueueTake(freeq, &v);
+        CORE__TaskMPMCQueueTake(freeq, &v);
     }
-    if (CORE__TaskFreeQueueTake(freeq, &v) != 0)
+    if (CORE__TaskMPMCQueueTake(freeq, &v) != 0)
         res = -1;
     if (res == 0) ConsoleOutput("PASS.\n");
     else          ConsoleOutput("FAIL.\n");
@@ -236,9 +236,9 @@ EnsureFreeQueueTakeFailsWhenDrained
 }
 
 static int
-EnsureFreeQueueTakeProducesExpectedResult
+EnsureMPMCQueueTakeProducesExpectedResult
 (
-    CORE__TASK_FREE_QUEUE *freeq
+    CORE__TASK_MPMC_QUEUE *freeq
 )
 {
     uint32_t i = 0;
@@ -246,17 +246,17 @@ EnsureFreeQueueTakeProducesExpectedResult
     uint32_t v = CORE_TASK_TEST_DEFAULT_CHAR;
     int    res = 0;
 
-    ConsoleOutput("CORE__TASK_FREE_QUEUE: Take operation produces expected result     : ");
-    ResetFreeQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    ConsoleOutput("CORE__TASK_MPMC_QUEUE: Take operation produces expected result     : ");
+    ResetMPMCQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
     /* fill the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskFreeQueuePush(freeq, 'A');
+        CORE__TaskMPMCQueuePush(freeq, 'A');
     }
     /* drain the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskFreeQueueTake(freeq, &v);
+        CORE__TaskMPMCQueueTake(freeq, &v);
         if (v != 'A')
             res = -1;
         v = CORE_TASK_TEST_DEFAULT_CHAR;
@@ -267,9 +267,9 @@ EnsureFreeQueueTakeProducesExpectedResult
 }
 
 static int
-EnsureFreeQueueTakeProducesItemsInFifoOrder
+EnsureMPMCQueueTakeProducesItemsInFifoOrder
 (
-    CORE__TASK_FREE_QUEUE *freeq
+    CORE__TASK_MPMC_QUEUE *freeq
 )
 {
     uint32_t i = 0;
@@ -278,18 +278,18 @@ EnsureFreeQueueTakeProducesItemsInFifoOrder
     uint32_t v = CORE_TASK_TEST_DEFAULT_CHAR;
     int    res = 0;
 
-    ConsoleOutput("CORE__TASK_FREE_QUEUE: Take operation produces items in FIFO order : ");
-    ResetFreeQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    ConsoleOutput("CORE__TASK_MPMC_QUEUE: Take operation produces items in FIFO order : ");
+    ResetMPMCQueue(freeq, freeq->Capacity, freeq->MemoryStart, freeq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
     /* fill the queue */
     for (i = 0, j = 0; i < n; ++i)
     {
-        CORE__TaskFreeQueuePush(freeq, j + 'A');
+        CORE__TaskMPMCQueuePush(freeq, j + 'A');
         j = (j + 1) % 26;
     }
     /* drain the queue */
     for (i = 0, j = 0; i < n; ++i)
     {
-        CORE__TaskFreeQueueTake(freeq, &v);
+        CORE__TaskMPMCQueueTake(freeq, &v);
         if (v != (j + 'A'))
             res = -1;
         v = CORE_TASK_TEST_DEFAULT_CHAR;
@@ -301,23 +301,23 @@ EnsureFreeQueueTakeProducesItemsInFifoOrder
 }
 
 static int
-EnsureWorkQueueMeetsCapacity
+EnsureSPMCQueueMeetsCapacity
 (
-    CORE__TASK_WORK_QUEUE *workq
+    CORE__TASK_SPMC_QUEUE *workq
 )
 {
     uint32_t i = 0;
     uint32_t n = workq->Capacity;
     int    res = 0;
 
-    ConsoleOutput("CORE__TASK_WORK_QUEUE: Can push Capacity (%u) items successfully: ", n);
-    ResetWorkQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
-    /* make sure that CORE__TaskWorkQueuePush of the same item Capacity times succeeds */
+    ConsoleOutput("CORE__TASK_SPMC_QUEUE: Can push Capacity (%u) items successfully: ", n);
+    ResetSPMCQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    /* make sure that CORE__TaskSPMCQueuePush of the same item Capacity times succeeds */
     /* pushing more than Capacity items will overwrite the oldest items, but the work 
      * queue has only a fixed number of available items, so this cannot happen. */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskWorkQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
+        CORE__TaskSPMCQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
     }
     if (res == 0) ConsoleOutput("PASS.\n");
     else          ConsoleOutput("FAIL.\n");
@@ -325,43 +325,43 @@ EnsureWorkQueueMeetsCapacity
 }
 
 static int
-EnsureWorkQueueCanExceedCapacity
+EnsureSPMCQueueCanExceedCapacity
 (
-    CORE__TASK_WORK_QUEUE *workq
+    CORE__TASK_SPMC_QUEUE *workq
 )
 {
     uint32_t i = 0;
     uint32_t n = workq->Capacity;
     int    res = 0;
 
-    ConsoleOutput("CORE__TASK_WORK_QUEUE: Can exceed Capacity (%u) items           : ", n);
-    ResetWorkQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
-    /* make sure that CORE__TaskWorkQueuePush of the same item Capacity times succeeds */
+    ConsoleOutput("CORE__TASK_SPMC_QUEUE: Can exceed Capacity (%u) items           : ", n);
+    ResetSPMCQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    /* make sure that CORE__TaskSPMCQueuePush of the same item Capacity times succeeds */
     /* pushing more than Capacity items will overwrite the oldest items, but the work 
      * queue has only a fixed number of available items, so this cannot happen. */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskWorkQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
+        CORE__TaskSPMCQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
     }
-    CORE__TaskWorkQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_INTERNAL, 0, 0, CORE_TASK_ID_VALID));
+    CORE__TaskSPMCQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_INTERNAL, 0, 0, CORE_TASK_ID_VALID));
     if (res == 0) ConsoleOutput("PASS.\n");
     else          ConsoleOutput("FAIL.\n");
     return res;
 }
 
 static int
-EnsureWorkQueueTakeFailsWhenEmpty
+EnsureSPMCQueueTakeFailsWhenEmpty
 (
-    CORE__TASK_WORK_QUEUE *workq
+    CORE__TASK_SPMC_QUEUE *workq
 )
 {
     CORE_TASK_ID v = CORE_INVALID_TASK_ID;
     int       more = 0;
     int        res = 0;
 
-    ConsoleOutput("CORE__TASK_WORK_QUEUE: Cannot take from empty queue                : ");
-    ResetWorkQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
-    if (CORE__TaskWorkQueueTake(workq, &v, &more) != 0)
+    ConsoleOutput("CORE__TASK_SPMC_QUEUE: Cannot take from empty queue                : ");
+    ResetSPMCQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    if (CORE__TaskSPMCQueueTake(workq, &v, &more) != 0)
         res = -1;
     if (res == 0) ConsoleOutput("PASS.\n");
     else          ConsoleOutput("FAIL.\n");
@@ -369,18 +369,18 @@ EnsureWorkQueueTakeFailsWhenEmpty
 }
 
 static int
-EnsureWorkQueueStealFailsWhenEmpty
+EnsureSPMCQueueStealFailsWhenEmpty
 (
-    CORE__TASK_WORK_QUEUE *workq
+    CORE__TASK_SPMC_QUEUE *workq
 )
 {
     CORE_TASK_ID v = 0;
     int       more = 0;
     int        res = 0;
 
-    ConsoleOutput("CORE__TASK_WORK_QUEUE: Cannot steal from empty queue               : ");
-    ResetWorkQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
-    if (CORE__TaskWorkQueueSteal(workq, &v, &more) != 0)
+    ConsoleOutput("CORE__TASK_SPMC_QUEUE: Cannot steal from empty queue               : ");
+    ResetSPMCQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    if (CORE__TaskSPMCQueueSteal(workq, &v, &more) != 0)
         res = -1;
     if (res == 0) ConsoleOutput("PASS.\n");
     else          ConsoleOutput("FAIL.\n");
@@ -388,9 +388,9 @@ EnsureWorkQueueStealFailsWhenEmpty
 }
 
 static int
-EnsureWorkQueueCanDrainByTake
+EnsureSPMCQueueCanDrainByTake
 (
-    CORE__TASK_WORK_QUEUE *workq
+    CORE__TASK_SPMC_QUEUE *workq
 )
 {
     CORE_TASK_ID v = 0;
@@ -399,17 +399,17 @@ EnsureWorkQueueCanDrainByTake
     int       more = 0;
     int        res = 0;
 
-    ConsoleOutput("CORE__TASK_WORK_QUEUE: Can drain a full queue by take              : ");
-    ResetWorkQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    ConsoleOutput("CORE__TASK_SPMC_QUEUE: Can drain a full queue by take              : ");
+    ResetSPMCQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
     /* fill the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskWorkQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
+        CORE__TaskSPMCQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
     }
     /* drain the queue */
     for (i = 0; i < n; ++i)
     {
-        if (CORE__TaskWorkQueueTake(workq, &v, &more) == 0)
+        if (CORE__TaskSPMCQueueTake(workq, &v, &more) == 0)
         {   /* a take failed - this is unexpected */
             res = -1;
         }
@@ -420,9 +420,9 @@ EnsureWorkQueueCanDrainByTake
 }
 
 static int
-EnsureWorkQueueCanDrainBySteal
+EnsureSPMCQueueCanDrainBySteal
 (
-    CORE__TASK_WORK_QUEUE *workq
+    CORE__TASK_SPMC_QUEUE *workq
 )
 {
     CORE_TASK_ID v = 0;
@@ -431,17 +431,17 @@ EnsureWorkQueueCanDrainBySteal
     int       more = 0;
     int        res = 0;
 
-    ConsoleOutput("CORE__TASK_WORK_QUEUE: Can drain a full queue by steal             : ");
-    ResetWorkQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    ConsoleOutput("CORE__TASK_SPMC_QUEUE: Can drain a full queue by steal             : ");
+    ResetSPMCQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
     /* fill the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskWorkQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
+        CORE__TaskSPMCQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
     }
     /* drain the queue */
     for (i = 0; i < n; ++i)
     {
-        if (CORE__TaskWorkQueueSteal(workq, &v, &more) == 0)
+        if (CORE__TaskSPMCQueueSteal(workq, &v, &more) == 0)
         {   /* a take failed - this is unexpected */
             res = -1;
         }
@@ -452,9 +452,9 @@ EnsureWorkQueueCanDrainBySteal
 }
 
 static int
-EnsureWorkQueueTakeFailsWhenDrained
+EnsureSPMCQueueTakeFailsWhenDrained
 (
-    CORE__TASK_WORK_QUEUE *workq
+    CORE__TASK_SPMC_QUEUE *workq
 )
 {
     CORE_TASK_ID v = 0;
@@ -463,19 +463,19 @@ EnsureWorkQueueTakeFailsWhenDrained
     int       more = 0;
     int        res = 0;
 
-    ConsoleOutput("CORE__TASK_WORK_QUEUE: Cannot take from drained queue              : ");
-    ResetWorkQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    ConsoleOutput("CORE__TASK_SPMC_QUEUE: Cannot take from drained queue              : ");
+    ResetSPMCQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
     /* fill the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskWorkQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
+        CORE__TaskSPMCQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
     }
     /* drain the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskWorkQueueTake(workq, &v, &more);
+        CORE__TaskSPMCQueueTake(workq, &v, &more);
     }
-    if (CORE__TaskWorkQueueTake(workq, &v, &more) != 0)
+    if (CORE__TaskSPMCQueueTake(workq, &v, &more) != 0)
         res = -1;
     if (res == 0) ConsoleOutput("PASS.\n");
     else          ConsoleOutput("FAIL.\n");
@@ -483,9 +483,9 @@ EnsureWorkQueueTakeFailsWhenDrained
 }
 
 static int
-EnsureWorkQueueStealFailsWhenDrained
+EnsureSPMCQueueStealFailsWhenDrained
 (
-    CORE__TASK_WORK_QUEUE *workq
+    CORE__TASK_SPMC_QUEUE *workq
 )
 {
     CORE_TASK_ID v = 0;
@@ -494,19 +494,19 @@ EnsureWorkQueueStealFailsWhenDrained
     int       more = 0;
     int        res = 0;
 
-    ConsoleOutput("CORE__TASK_WORK_QUEUE: Cannot steal from drained queue             : ");
-    ResetWorkQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    ConsoleOutput("CORE__TASK_SPMC_QUEUE: Cannot steal from drained queue             : ");
+    ResetSPMCQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
     /* fill the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskWorkQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
+        CORE__TaskSPMCQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
     }
     /* drain the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskWorkQueueSteal(workq, &v, &more);
+        CORE__TaskSPMCQueueSteal(workq, &v, &more);
     }
-    if (CORE__TaskWorkQueueSteal(workq, &v, &more) != 0)
+    if (CORE__TaskSPMCQueueSteal(workq, &v, &more) != 0)
         res = -1;
     if (res == 0) ConsoleOutput("PASS.\n");
     else          ConsoleOutput("FAIL.\n");
@@ -514,9 +514,9 @@ EnsureWorkQueueStealFailsWhenDrained
 }
 
 static int
-EnsureWorkQueueTakeProducesExpectedResult
+EnsureSPMCQueueTakeProducesExpectedResult
 (
-    CORE__TASK_WORK_QUEUE *workq
+    CORE__TASK_SPMC_QUEUE *workq
 )
 {
     CORE_TASK_ID v = 0;
@@ -525,17 +525,17 @@ EnsureWorkQueueTakeProducesExpectedResult
     int       more = 0;
     int        res = 0;
 
-    ConsoleOutput("CORE__TASK_WORK_QUEUE: Take operation produces expected result     : ");
-    ResetWorkQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    ConsoleOutput("CORE__TASK_SPMC_QUEUE: Take operation produces expected result     : ");
+    ResetSPMCQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
     /* fill the queue */
     for (i = 0; i < n; ++i)
     {   /* each pushed item has the same value */
-        CORE__TaskWorkQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, 1, CORE_TASK_ID_VALID));
+        CORE__TaskSPMCQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, 1, CORE_TASK_ID_VALID));
     }
     /* drain the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskWorkQueueTake(workq, &v, &more);
+        CORE__TaskSPMCQueueTake(workq, &v, &more);
         if (v != CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, 1, CORE_TASK_ID_VALID))
         {   /* the task ID doesn't match the expected value */
             res = -1;
@@ -555,9 +555,9 @@ EnsureWorkQueueTakeProducesExpectedResult
 }
 
 static int
-EnsureWorkQueueStealProducesExpectedResult
+EnsureSPMCQueueStealProducesExpectedResult
 (
-    CORE__TASK_WORK_QUEUE *workq
+    CORE__TASK_SPMC_QUEUE *workq
 )
 {
     CORE_TASK_ID v = 0;
@@ -566,17 +566,17 @@ EnsureWorkQueueStealProducesExpectedResult
     int       more = 0;
     int        res = 0;
 
-    ConsoleOutput("CORE__TASK_WORK_QUEUE: Steal operation produces expected result    : ");
-    ResetWorkQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    ConsoleOutput("CORE__TASK_SPMC_QUEUE: Steal operation produces expected result    : ");
+    ResetSPMCQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
     /* fill the queue */
     for (i = 0; i < n; ++i)
     {   /* each pushed item has the same value */
-        CORE__TaskWorkQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, 1, CORE_TASK_ID_VALID));
+        CORE__TaskSPMCQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, 1, CORE_TASK_ID_VALID));
     }
     /* drain the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskWorkQueueSteal(workq, &v, &more);
+        CORE__TaskSPMCQueueSteal(workq, &v, &more);
         if (v != CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, 1, CORE_TASK_ID_VALID))
         {   /* the task ID doesn't match the expected value */
             res = -1;
@@ -596,9 +596,9 @@ EnsureWorkQueueStealProducesExpectedResult
 }
 
 static int
-EnsureWorkQueueTakeProducesItemsInLifoOrder
+EnsureSPMCQueueTakeProducesItemsInLifoOrder
 (
-    CORE__TASK_WORK_QUEUE *workq
+    CORE__TASK_SPMC_QUEUE *workq
 )
 {
     CORE_TASK_ID v = 0;
@@ -608,17 +608,17 @@ EnsureWorkQueueTakeProducesItemsInLifoOrder
     int       more = 0;
     int        res = 0;
 
-    ConsoleOutput("CORE__TASK_WORK_QUEUE: Take operation produces items in LIFO order : ");
-    ResetWorkQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    ConsoleOutput("CORE__TASK_SPMC_QUEUE: Take operation produces items in LIFO order : ");
+    ResetSPMCQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
     /* fill the queue */
     for (i = 0; i < n; ++i)
     {   /* each pushed item has an increasing slot index value */
-        CORE__TaskWorkQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
+        CORE__TaskSPMCQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
     }
     /* drain the queue */
     for (i = 0, j = n-1; i < n; ++i, --j)
     {
-        CORE__TaskWorkQueueTake(workq, &v, &more);
+        CORE__TaskSPMCQueueTake(workq, &v, &more);
         if (CORE_TaskIndexInPool(v) != j)
         {   /* the task ID slot index doesn't match the expected value */
             res = -1;
@@ -630,9 +630,9 @@ EnsureWorkQueueTakeProducesItemsInLifoOrder
 }
 
 static int
-EnsureWorkQueueStealProducesItemsInFifoOrder
+EnsureSPMCQueueStealProducesItemsInFifoOrder
 (
-    CORE__TASK_WORK_QUEUE *workq
+    CORE__TASK_SPMC_QUEUE *workq
 )
 {
     CORE_TASK_ID v = 0;
@@ -641,22 +641,98 @@ EnsureWorkQueueStealProducesItemsInFifoOrder
     int       more = 0;
     int        res = 0;
 
-    ConsoleOutput("CORE__TASK_WORK_QUEUE: Steal operation produces items in FIFO order: ");
-    ResetWorkQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
+    ConsoleOutput("CORE__TASK_SPMC_QUEUE: Steal operation produces items in FIFO order: ");
+    ResetSPMCQueue(workq, workq->Capacity, workq->MemoryStart, workq->MemorySize, CORE_TASK_TEST_DEFAULT_CHAR);
     /* fill the queue */
     for (i = 0; i < n; ++i)
     {   /* each pushed item has an increasing slot index value */
-        CORE__TaskWorkQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
+        CORE__TaskSPMCQueuePush(workq, CORE_MakeTaskId(CORE_TASK_ID_EXTERNAL, 0, i, CORE_TASK_ID_VALID));
     }
     /* drain the queue */
     for (i = 0; i < n; ++i)
     {
-        CORE__TaskWorkQueueSteal(workq, &v, &more);
+        CORE__TaskSPMCQueueSteal(workq, &v, &more);
         if (CORE_TaskIndexInPool(v) != i)
         {   /* the task ID slot index doesn't match the expected value */
             res = -1;
         }
     }
+    if (res == 0) ConsoleOutput("PASS.\n");
+    else          ConsoleOutput("FAIL.\n");
+    return res;
+}
+
+static int
+EnsureAllPoolsCanBeAcquiredAndReleased
+(
+    struct _CORE_TASK_POOL_STORAGE *storage, 
+    struct _CORE_TASK_POOL_INIT *pool_types,
+    uint32_t                pool_type_count
+)
+{
+    struct _CORE_TASK_POOL **pool_list = NULL;
+    uint32_t                pool_count = CORE_QueryTaskPoolTotalCount(storage);
+    uint32_t                pool_index = 0;
+    uint32_t                   i, j, n;
+    int                            res = 0;
+
+    ConsoleOutput("CORE__TASK_POOL_STORAGE: Can acquire and release all pools         : ");
+    /* allocate temporary memory */
+    if ((pool_list = (struct _CORE_TASK_POOL**) malloc(pool_count * sizeof(struct _CORE_TASK_POOL*))) == NULL)
+    {
+        ConsoleOutput("FAIL.\n");
+        return -1;
+    }
+    /* acquire all pools and collect them in pool_list */
+    for (i = 0; i < pool_type_count; ++i)
+    {
+        for (j = 0, n = pool_types[i].PoolCount; j < n; ++j)
+        {
+            if ((pool_list[pool_index++] = CORE_AcquireTaskPool(storage, pool_types[i].PoolId)) == NULL)
+            {   /* this should have been successful */
+                res = -1;
+            }
+        }
+    }
+    /* ensure that the free lists are correct (they should all be NULL/empty) */
+    for (i = 0; i < pool_type_count; ++i)
+    {
+        if (storage->PoolFreeList[i] != NULL)
+        {   /* expected an empty free list */
+            res = -2;
+        }
+    }
+    /* release all pools back to the storage object */
+    for (i = 0; i < pool_count; ++i)
+    {
+        CORE_ReleaseTaskPool(pool_list[i]);
+    }
+    /* ensure that the free lists are correct */
+    for (i = 0; i < pool_type_count; ++i)
+    {   /* find the free list for the pool type */
+        for (j = 0; j < pool_type_count; ++j)
+        {
+            if (storage->PoolTypeIds[j] == pool_types[i].PoolId)
+            {   /* found the matching free list at index j */
+                struct _CORE_TASK_POOL *iter = storage->PoolFreeList[j];
+                /* walk the free list for the pool type */
+                n = 0;
+                while (iter != NULL)
+                {
+                    iter = iter->NextPool;
+                    n++;
+                }
+                /* make sure that the number of items in the free list match the PoolCount */
+                if (n != pool_types[i].PoolCount)
+                {   /* the count is unexpected */
+                    res = -3;
+                }
+                break;
+            }
+        }
+    }
+    /* free temporary memory */
+    free(pool_list);
     if (res == 0) ConsoleOutput("PASS.\n");
     else          ConsoleOutput("FAIL.\n");
     return res;
@@ -678,15 +754,26 @@ main
 {
     uint32_t free_queue_count = 65536;
     uint32_t work_queue_count = 65536;
-    size_t    free_queue_size = CORE__QueryTaskFreeQueueMemorySize(free_queue_count);
-    size_t    work_queue_size = CORE__QueryTaskWorkQueueMemorySize(work_queue_count);
+    uint32_t  pool_type_count = 3;
+    size_t  pool_storage_size = 0;
+    size_t    free_queue_size = CORE__QueryTaskMPMCQueueMemorySize(free_queue_count);
+    size_t    work_queue_size = CORE__QueryTaskSPMCQueueMemorySize(work_queue_count);
     void     *free_queue_stor = malloc(free_queue_size);
     void     *work_queue_stor = malloc(work_queue_size);
+    void    *pool_storage_mem = NULL;
     int          default_char = '!';
     int                result = 0;  /* success */
-    CORE__TASK_FREE_QUEUE     freeq;
-    CORE__TASK_WORK_QUEUE     workq;
+    
+    CORE__TASK_MPMC_QUEUE     freeq;
+    CORE__TASK_SPMC_QUEUE     workq;
     CORE_TASK_CPU_INFO     cpu_info;
+    
+    CORE_TASK_POOL_INIT  pool_types[3];
+    int32_t              type_valid[3];
+    int32_t             global_valid;
+
+    struct _CORE_TASK_POOL_STORAGE *storage = NULL;
+    CORE_TASK_POOL_STORAGE_INIT storage_init;
 
     UNREFERENCED_PARAMETER(argc);
     UNREFERENCED_PARAMETER(argv);
@@ -724,64 +811,123 @@ main
     ConsoleOutput("tasktest: Testing underlying queue functionality.\n");
     ConsoleOutput("freeq capacity: %u items requiring %Iu bytes.\n", free_queue_count, free_queue_size);
     ConsoleOutput("workq capacity: %u items requiring %Iu bytes.\n", work_queue_count, work_queue_size);
-    if (ResetFreeQueue(&freeq, free_queue_count, free_queue_stor, free_queue_size, default_char) < 0)
+    if (ResetMPMCQueue(&freeq, free_queue_count, free_queue_stor, free_queue_size, default_char) < 0)
     {
-        ConsoleError("ERROR: Failed to initialize CORE__TASK_FREE_QUEUE.\n");
+        ConsoleError("ERROR: Failed to initialize CORE__TASK_MPMC_QUEUE.\n");
         result = 1;
     }
-    if (ResetWorkQueue(&workq, work_queue_count, work_queue_stor, work_queue_size, default_char) < 0)
+    if (ResetSPMCQueue(&workq, work_queue_count, work_queue_stor, work_queue_size, default_char) < 0)
     {
-        ConsoleError("ERROR: Failed to initialize CORE__TASK_WORK_QUEUE.\n");
+        ConsoleError("ERROR: Failed to initialize CORE__TASK_SPMC_QUEUE.\n");
         result = 1;
     }
 
     /* end of initial state tests - bail here if anything failed */
     if (result) goto cleanup_and_exit;
 
-    if (EnsureFreeQueueMeetsCapacity(&freeq) < 0)
+    if (EnsureMPMCQueueMeetsCapacity(&freeq) < 0)
         result = -1;
-    if (EnsureFreeQueueCannotExceedCapacity(&freeq) < 0)
+    if (EnsureMPMCQueueCannotExceedCapacity(&freeq) < 0)
         result = -1;
-    if (EnsureFreeQueueTakeFailsWhenEmpty(&freeq) < 0)
+    if (EnsureMPMCQueueTakeFailsWhenEmpty(&freeq) < 0)
         result = -1;
-    if (EnsureFreeQueueCanDrain(&freeq) < 0)
+    if (EnsureMPMCQueueCanDrain(&freeq) < 0)
         result = -1;
-    if (EnsureFreeQueueTakeFailsWhenDrained(&freeq) < 0)
+    if (EnsureMPMCQueueTakeFailsWhenDrained(&freeq) < 0)
         result = -1;
-    if (EnsureFreeQueueTakeProducesExpectedResult(&freeq) < 0)
+    if (EnsureMPMCQueueTakeProducesExpectedResult(&freeq) < 0)
         result = -1;
-    if (EnsureFreeQueueTakeProducesItemsInFifoOrder(&freeq) < 0)
+    if (EnsureMPMCQueueTakeProducesItemsInFifoOrder(&freeq) < 0)
         result = -1;
 
-    if (EnsureWorkQueueMeetsCapacity(&workq) < 0)
+    if (EnsureSPMCQueueMeetsCapacity(&workq) < 0)
         result = -1;
-    if (EnsureWorkQueueCanExceedCapacity(&workq) < 0)
+    if (EnsureSPMCQueueCanExceedCapacity(&workq) < 0)
         result = -1;
-    if (EnsureWorkQueueTakeFailsWhenEmpty(&workq) < 0)
+    if (EnsureSPMCQueueTakeFailsWhenEmpty(&workq) < 0)
         result = -1;
-    if (EnsureWorkQueueStealFailsWhenEmpty(&workq) < 0)
+    if (EnsureSPMCQueueStealFailsWhenEmpty(&workq) < 0)
         result = -1;
-    if (EnsureWorkQueueCanDrainByTake(&workq) < 0)
+    if (EnsureSPMCQueueCanDrainByTake(&workq) < 0)
         result = -1;
-    if (EnsureWorkQueueCanDrainBySteal(&workq) < 0)
+    if (EnsureSPMCQueueCanDrainBySteal(&workq) < 0)
         result = -1;
-    if (EnsureWorkQueueTakeFailsWhenDrained(&workq) < 0)
+    if (EnsureSPMCQueueTakeFailsWhenDrained(&workq) < 0)
         result = -1;
-    if (EnsureWorkQueueStealFailsWhenDrained(&workq) < 0)
+    if (EnsureSPMCQueueStealFailsWhenDrained(&workq) < 0)
         result = -1;
-    if (EnsureWorkQueueTakeProducesExpectedResult(&workq) < 0)
+    if (EnsureSPMCQueueTakeProducesExpectedResult(&workq) < 0)
         result = -1;
-    if (EnsureWorkQueueStealProducesExpectedResult(&workq) < 0)
+    if (EnsureSPMCQueueStealProducesExpectedResult(&workq) < 0)
         result = -1;
-    if (EnsureWorkQueueTakeProducesItemsInLifoOrder(&workq) < 0)
+    if (EnsureSPMCQueueTakeProducesItemsInLifoOrder(&workq) < 0)
         result = -1;
-    if (EnsureWorkQueueStealProducesItemsInFifoOrder(&workq) < 0)
+    if (EnsureSPMCQueueStealProducesItemsInFifoOrder(&workq) < 0)
         result = -1;
 
     if (result) goto cleanup_and_exit;
 
+    /* test pool type validation and pool storage routines */
+    ConsoleOutput("\n");
+    ConsoleOutput("tasktest: Testing task pool storage functionality.\n");
+    pool_types[0].PoolId         = CORE_TASK_POOL_ID_MAIN;
+    pool_types[0].PoolCount      = 1;
+    pool_types[0].StealThreshold = 0;      /* wake up workers ASAP */
+    pool_types[0].MaxActiveTasks = 65536;  /* must be a power-of-two >= 2 */
+    pool_types[1].PoolId         = CORE_TASK_POOL_ID_WORKER;
+    pool_types[1].PoolCount      = 7;      /* set to number of worker threads */
+    pool_types[1].StealThreshold = 1;      /* keep one task for the worker */
+    pool_types[1].MaxActiveTasks = 65536;  /* must be a power-of-two >= 2 */
+    pool_types[2].PoolId         = CORE_TASK_POOL_ID_USER + 0;
+    pool_types[2].PoolCount      = 4;      /* whatever */
+    pool_types[2].StealThreshold = 0;      /* these threads never execute tasks */
+    pool_types[2].MaxActiveTasks = 512;    /* these threads don't define many tasks */
+    if (CORE_ValidateTaskPoolConfiguration(pool_types, type_valid, pool_type_count, &global_valid) < 0)
+    {
+        ConsoleError("ERROR: Task pool type definitions FAILED to validate.\n");
+        result = -1;
+    }
+    if (result) goto cleanup_and_exit;
+
+    pool_storage_size = CORE_QueryTaskPoolStorageMemorySize(pool_types, pool_type_count);
+    ConsoleOutput("_CORE_TASK_POOL_STORAGE: %u tasks requiring %Iu bytes (%IuMB).\n", 526336, pool_storage_size, pool_storage_size / (1024*1024));
+    ConsoleOutput("NOTE ******************: It is highly unlikely you need this many tasks.\n");
+
+    if ((pool_storage_mem = malloc(pool_storage_size)) == NULL)
+    {
+        ConsoleError("ERROR: Failed to allocate %Iu bytes for pool storage.\n", pool_storage_size);
+        result = -1;
+    }
+    if (result) goto cleanup_and_exit;
+
+    storage_init.TaskPoolTypes = pool_types;
+    storage_init.PoolTypeCount = pool_type_count;
+    storage_init.MemoryStart   = pool_storage_mem;
+    storage_init.MemorySize    = pool_storage_size;
+    if (CORE_CreateTaskPoolStorage(&storage, &storage_init) < 0)
+    {
+        ConsoleError("ERROR: Failed to create task pool storage.\n");
+        result = -1;
+    }
+    if (result) goto cleanup_and_exit;
+
+    /* now we can perform specific tests that just acquire and release pools from the storage */
+    if (EnsureAllPoolsCanBeAcquiredAndReleased(storage, pool_types, pool_type_count) < 0)
+        result = -1;
+
+    /* other tests here */
+    
+    CORE_DeleteTaskPoolStorage(storage);
+    free(pool_storage_mem);
+    storage = NULL;
+
 cleanup_and_exit:
     ConsoleOutput("\n");
+    if (storage != NULL)
+    {
+        CORE_DeleteTaskPoolStorage(storage);
+        free(pool_storage_mem);
+    }
     free(work_queue_stor);
     free(free_queue_stor);
     return result;
