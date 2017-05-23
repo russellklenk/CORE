@@ -107,6 +107,17 @@ ResetSPMCQueue
     return CORE__InitTaskSPMCQueue(workq, capacity, memory, memory_size);
 }
 
+static void
+TaskMainNoOp
+(
+    CORE_TASK_ID task_id, 
+    void      *task_args
+)
+{
+    UNREFERENCED_PARAMETER(task_id);
+    UNREFERENCED_PARAMETER(task_args);
+}
+
 static int
 EnsureMPMCQueueMeetsCapacity
 (
@@ -738,6 +749,392 @@ EnsureAllPoolsCanBeAcquiredAndReleased
     return res;
 }
 
+static int
+EnsureAllTaskSlotsCanBeAllocated
+(
+    struct _CORE_TASK_POOL_STORAGE *storage, 
+    uint32_t                        pool_id
+)
+{
+    struct _CORE_TASK_POOL *pool = NULL;
+    uint32_t                i, n;
+    int                      res = 0;
+
+    ConsoleOutput("CORE__TASK_POOL: Can acquire all task data slots                   : ");
+    if ((pool = CORE_AcquireTaskPool(storage, pool_id)) == NULL)
+    {
+        ConsoleOutput("FAIL %d.\n", -1);
+        return -1;
+    }
+    for (i = 0, n = CORE_QueryTaskPoolCapacity(pool); i < n; ++i)
+    {
+        CORE_TASK_INIT  init;
+        CORE_TASK_ID task_id;
+        if (CORE_InitExternalTask(&init) < 0)
+        {   /* failed to initialize the task definition */
+            res = -2;
+            break;
+        }
+        if (!CORE_TaskIdValid((task_id = CORE_DefineTask(pool, &init))))
+        {   /* failed to allocate a task slot */
+            res = -3;
+            break;
+        }
+    }
+    /* return the task pool to the storage object */
+    CORE_ReleaseTaskPool(pool);
+    if (res == 0) ConsoleOutput("PASS.\n");
+    else          ConsoleOutput("FAIL %d.\n", res);
+    return res;
+}
+
+static int
+EnsureUnlaunchedTaskCannotComplete
+(
+    struct _CORE_TASK_POOL_STORAGE *storage, 
+    uint32_t                        pool_id
+)
+{
+    struct _CORE_TASK_POOL *pool = NULL;
+    CORE_TASK_INIT          init;
+    CORE_TASK_ID         task_id;
+    CORE_TASK_ID        ready_id;
+    int                      res = 0;
+
+    ConsoleOutput("CORE__TASK_POOL: Task cannot complete without CORE_LaunchTask      : ");
+    pool = CORE_AcquireTaskPool(storage, pool_id);
+    /* initialize a simple task with no args or dependencies */
+    CORE_InitTask(&init, TaskMainNoOp, NULL, 0, NULL, 0);
+    /* define the task, which should make it appear in the pool's ready-to-run queue */
+    task_id = CORE_DefineTask(pool, &init);
+    /* make sure that the task's WorkCount is > 1 */
+    if (pool->TaskData[CORE_TaskIndexInPool(task_id)].WorkCount < 2)
+    {   /* the WorkCount field is too small */
+        res = -1;
+    }
+    /* return the task pool to the storage object */
+    CORE_ReleaseTaskPool(pool);
+    if (res == 0) ConsoleOutput("PASS.\n");
+    else          ConsoleOutput("FAIL %d.\n", res);
+    return res;
+}
+
+static int
+EnsureLaunchedTaskCanComplete
+(
+    struct _CORE_TASK_POOL_STORAGE *storage, 
+    uint32_t                        pool_id
+)
+{
+    struct _CORE_TASK_POOL *pool = NULL;
+    CORE_TASK_INIT          init;
+    CORE_TASK_ID         task_id;
+    CORE_TASK_ID        ready_id;
+    int                      res = 0;
+
+    ConsoleOutput("CORE__TASK_POOL: Task can complete after CORE_LaunchTask           : ");
+    pool = CORE_AcquireTaskPool(storage, pool_id);
+    /* initialize a simple task with no args or dependencies */
+    CORE_InitTask(&init, TaskMainNoOp, NULL, 0, NULL, 0);
+    /* define the task, which should make it appear in the pool's ready-to-run queue */
+    task_id = CORE_DefineTask(pool, &init);
+    /* use CORE_LaunchTask to indicate that we're finished defining the task and any child tasks */
+    CORE_LaunchTask(pool, task_id);
+    /* make sure that the task's WorkCount is 1 */
+    if (pool->TaskData[CORE_TaskIndexInPool(task_id)].WorkCount != 1)
+    {   /* the WorkCount field is wrong */
+        res = -1;
+    }
+    /* return the task pool to the storage object */
+    CORE_ReleaseTaskPool(pool);
+    if (res == 0) ConsoleOutput("PASS.\n");
+    else          ConsoleOutput("FAIL %d.\n", res);
+    return res;
+}
+
+static int
+EnsureTaskWithNoDependenciesMadeReadyToRunOnDefine
+(
+    struct _CORE_TASK_POOL_STORAGE *storage, 
+    uint32_t                        pool_id
+)
+{
+    struct _CORE_TASK_POOL *pool = NULL;
+    CORE_TASK_INIT          init;
+    CORE_TASK_ID         task_id;
+    CORE_TASK_ID        ready_id;
+    int                     more = 0;
+    int                      res = 0;
+
+    ConsoleOutput("CORE__TASK_POOL: No-dependency task is Ready-to-Run when defined   : ");
+    pool = CORE_AcquireTaskPool(storage, pool_id);
+    /* initialize a simple task with no args or dependencies */
+    CORE_InitTask(&init, TaskMainNoOp, NULL, 0, NULL, 0);
+    /* define the task, which should make it appear in the pool's ready-to-run queue */
+    task_id = CORE_DefineTask(pool, &init);
+    /* make sure that we can pop an item from the ReadyTasks queue, and that the ID matches */
+    if (CORE__TaskSPMCQueueTake(&pool->ReadyTasks, &ready_id, &more) == 0)
+    {   /* unable to take an item from the ready-to-run queue */
+        res = -1;
+    }
+    if (res == 0 && ready_id != task_id)
+    {   /* the task IDs do not match */
+        res = -2;
+    }
+    if (res == 0 && more != 0)
+    {   /* there's unexpected data in the ready-to-run queue */
+        res = -3;
+    }
+    /* return the task pool to the storage object */
+    CORE_ReleaseTaskPool(pool);
+    if (res == 0) ConsoleOutput("PASS.\n");
+    else          ConsoleOutput("FAIL %d.\n", res);
+    return res;
+}
+
+static int
+EnsureTaskWithNoDependenciesCanCompleteImmediate
+(
+    struct _CORE_TASK_POOL_STORAGE *storage, 
+    uint32_t                        pool_id
+)
+{
+    struct _CORE_TASK_POOL *pool = NULL;
+    CORE__TASK_DATA        *task;
+    CORE_TASK_INIT          init;
+    CORE_TASK_ID         task_id;
+    CORE_TASK_ID        ready_id;
+    int                     more = 0;
+    int                      res = 0;
+
+    ConsoleOutput("CORE__TASK_POOL: No-dependency task can complete normally/immediate: ");
+    pool = CORE_AcquireTaskPool(storage, pool_id);
+    /* initialize a simple task with no args or dependencies */
+    CORE_InitTask(&init, TaskMainNoOp, NULL, 0, NULL, 0);
+    /* define the task, which should make it appear in the pool's ready-to-run queue */
+    task_id = CORE_DefineTask(pool, &init);
+    /* take the item from the ready queue and execute it before the caller can call CORE_LaunchTask */
+    CORE__TaskSPMCQueueTake(&pool->ReadyTasks, &ready_id, &more);
+    task = &pool->TaskData[CORE_TaskIndexInPool(ready_id)];
+    task->TaskMain(ready_id, task->TaskData);
+    CORE_CompleteTask(pool, ready_id);
+    /* now call CORE_LaunchTask, which should allow the task to actually complete */
+    CORE_LaunchTask(pool, task_id);
+    /* make sure that the task's WorkCount is zero and PermitCount is -1 */
+    task = &pool->TaskData[CORE_TaskIndexInPool(task_id)];
+    if (task->WorkCount != 0)
+    {   /* the WorkCount is wrong */
+        res = -1;
+    }
+    if (task->PermitCount != -1)
+    {   /* the PermitCount is wrong */
+        res = -2;
+    }
+    /* return the task pool to the storage object */
+    CORE_ReleaseTaskPool(pool);
+    if (res == 0) ConsoleOutput("PASS.\n");
+    else          ConsoleOutput("FAIL %d.\n", res);
+    return res;
+}
+
+static int
+EnsureTaskWithNoDependenciesCanCompleteDeferred
+(
+    struct _CORE_TASK_POOL_STORAGE *storage, 
+    uint32_t                        pool_id
+)
+{
+    struct _CORE_TASK_POOL *pool = NULL;
+    CORE__TASK_DATA        *task;
+    CORE_TASK_INIT          init;
+    CORE_TASK_ID         task_id;
+    CORE_TASK_ID        ready_id;
+    int                     more = 0;
+    int                      res = 0;
+
+    ConsoleOutput("CORE__TASK_POOL: No-dependency task can complete normally/deferred : ");
+    pool = CORE_AcquireTaskPool(storage, pool_id);
+    /* initialize a simple task with no args or dependencies */
+    CORE_InitTask(&init, TaskMainNoOp, NULL, 0, NULL, 0);
+    /* define the task, which should make it appear in the pool's ready-to-run queue */
+    task_id = CORE_DefineTask(pool, &init);
+    /* now call CORE_LaunchTask, which should allow the task to actually complete after execution */
+    CORE_LaunchTask(pool, task_id);
+    /* take the item from the ready queue and execute it after the creator called CORE_LaunchTask */
+    CORE__TaskSPMCQueueTake(&pool->ReadyTasks, &ready_id, &more);
+    task = &pool->TaskData[CORE_TaskIndexInPool(ready_id)];
+    task->TaskMain(ready_id, task->TaskData);
+    CORE_CompleteTask(pool, ready_id);
+    /* make sure that the task's WorkCount is zero and PermitCount is -1 */
+    task = &pool->TaskData[CORE_TaskIndexInPool(task_id)];
+    if (task->WorkCount != 0)
+    {   /* the WorkCount is wrong */
+        res = -1;
+    }
+    if (task->PermitCount != -1)
+    {   /* the PermitCount is wrong */
+        res = -2;
+    }
+    /* return the task pool to the storage object */
+    CORE_ReleaseTaskPool(pool);
+    if (res == 0) ConsoleOutput("PASS.\n");
+    else          ConsoleOutput("FAIL %d.\n", res);
+    return res;
+}
+
+static int
+EnsureTaskCompletionReadiesDependencies
+(
+    struct _CORE_TASK_POOL_STORAGE *storage, 
+    uint32_t                        pool_id
+)
+{
+    struct _CORE_TASK_POOL *pool = NULL;
+    CORE__TASK_DATA        *task;
+    CORE_TASK_INIT          init;
+    CORE_TASK_ID       task_id_a;
+    CORE_TASK_ID       task_id_b;
+    CORE_TASK_ID        ready_id;
+    int                     more = 0;
+    int                      res = 0;
+
+    ConsoleOutput("CORE__TASK_POOL: Task completion readies dependencies              : ");
+    pool = CORE_AcquireTaskPool(storage, pool_id);
+    /* initialize a simple task with no args and no dependencies */
+    CORE_InitTask(&init, TaskMainNoOp, NULL, 0, NULL, 0);
+    /* define the task, which should make it appear in the pool's ready-to-run queue */
+    task_id_a = CORE_DefineTask(pool, &init);
+    /* define a second task that cannot run until the first task completes */
+    CORE_InitTask(&init, TaskMainNoOp, NULL, 0, &task_id_a, 1);
+    task_id_b = CORE_DefineTask(pool, &init);
+    /* now call CORE_LaunchTask, which should allow the task to actually complete after execution */
+    CORE_LaunchTask(pool, task_id_a);
+    CORE_LaunchTask(pool, task_id_b);
+    /* take the item from the ready queue and execute it after the creator called CORE_LaunchTask */
+    CORE__TaskSPMCQueueTake(&pool->ReadyTasks, &ready_id, &more);
+    /* before executing it, make sure the ready task is task_id_a and more is 0 */
+    if (res == 0 && ready_id != task_id_a)
+    {   /* this isn't the correct task ID - expected task_id_a */
+        res = -1;
+    }
+    if (res == 0 && more != 0)
+    {   /* this is wrong - task_id_b shouldn't be ready-to-run */
+        res = -2;
+    }
+    task = &pool->TaskData[CORE_TaskIndexInPool(ready_id)];
+    task->TaskMain(ready_id, task->TaskData);
+    CORE_CompleteTask(pool, ready_id);
+    /* now that task_id_a has completed, task_id_b should appear in the ready-to-run queue */
+    if (res == 0 && CORE__TaskSPMCQueueTake(&pool->ReadyTasks, &ready_id, &more) == 0)
+    {   /* the queue should have contained one item - task_id_b */
+        res = -3;
+    }
+    if (res == 0 && ready_id != task_id_b)
+    {   /* this isn't the correct task ID - expected task_id_b */
+        res = -4;
+    }
+    if (res == 0 && more != 0)
+    {   /* there should not be additional ready-to-run tasks */
+        res = -5;
+    }
+    /* return the task pool to the storage object */
+    CORE_ReleaseTaskPool(pool);
+    if (res == 0) ConsoleOutput("PASS.\n");
+    else          ConsoleOutput("FAIL %d.\n", res);
+    return res;
+}
+
+static int
+EnsureUncompletedChildTaskPreventsParentFromCompleting
+(
+    struct _CORE_TASK_POOL_STORAGE *storage, 
+    uint32_t                        pool_id
+)
+{
+    struct _CORE_TASK_POOL *pool = NULL;
+    CORE__TASK_DATA        *task;
+    CORE_TASK_INIT          init;
+    CORE_TASK_ID       parent_id;
+    CORE_TASK_ID        child_id;
+    int                      res = 0;
+
+    ConsoleOutput("CORE__TASK_POOL: Uncompleted child prevents parent completion      : ");
+    pool = CORE_AcquireTaskPool(storage, pool_id);
+    /* initialize a simple task with no args or dependencies */
+    CORE_InitTask(&init, TaskMainNoOp, NULL, 0, NULL, 0);
+    /* define the task, which should make it appear in the pool's ready-to-run queue */
+    parent_id = CORE_DefineTask(pool, &init);
+    /* define a child task with no args or dependencies */
+    CORE_InitChildTask(&init, parent_id, TaskMainNoOp, NULL, 0, NULL, 0);
+    child_id = CORE_DefineTask(pool, &init);
+    /* make sure that the parent task's WorkCount is 3 - one for outstanding define, one for work, one for child */
+    task = &pool->TaskData[CORE_TaskIndexInPool(parent_id)];
+    if (task->WorkCount != 3)
+    {   /* the WorkCount is wrong */
+        res = -1;
+    }
+    /* return the task pool to the storage object */
+    CORE_ReleaseTaskPool(pool);
+    if (res == 0) ConsoleOutput("PASS.\n");
+    else          ConsoleOutput("FAIL %d.\n", res);
+    return res;
+}
+
+static int
+EnsureCompletedChildTaskAllowsParentToComplete
+(
+    struct _CORE_TASK_POOL_STORAGE *storage, 
+    uint32_t                        pool_id
+)
+{
+    struct _CORE_TASK_POOL *pool = NULL;
+    CORE__TASK_DATA        *task;
+    CORE_TASK_INIT          init;
+    CORE_TASK_ID       parent_id;
+    CORE_TASK_ID        child_id;
+    CORE_TASK_ID        ready_id;
+    int                     more = 0;
+    int                      res = 0;
+
+    ConsoleOutput("CORE__TASK_POOL: Uncompleted child prevents parent completion      : ");
+    pool = CORE_AcquireTaskPool(storage, pool_id);
+    /* initialize a simple task with no args or dependencies */
+    CORE_InitTask(&init, TaskMainNoOp, NULL, 0, NULL, 0);
+    /* define the task, which should make it appear in the pool's ready-to-run queue */
+    parent_id = CORE_DefineTask(pool, &init);
+    /* define a child task with no args or dependencies */
+    CORE_InitChildTask(&init, parent_id, TaskMainNoOp, NULL, 0, NULL, 0);
+    child_id = CORE_DefineTask(pool, &init);
+    /* launch both tasks, decrementing their WorkCount by one for the define */
+    CORE_LaunchTask(pool, parent_id); /* parent task WorkCount 3 => 2 */
+    CORE_LaunchTask(pool, child_id);  /* child task WorkCount 2 => 1 */
+    /* take the item from the ready queue and execute it */
+    /* this will be child_id, since Push/Take operate LIFO */
+    CORE__TaskSPMCQueueTake(&pool->ReadyTasks, &ready_id, &more);
+    if (res == 0 && ready_id != child_id)
+    {   /* unexpected task ID - should have been child_id */
+        res = -1;
+    }
+    if (res == 0 && more == 0)
+    {   /* expected more items in the queue - parent_id should also be ready-to-run */
+        res = -2;
+    }
+    task = &pool->TaskData[CORE_TaskIndexInPool(ready_id)];
+    task->TaskMain(ready_id, task->TaskData);
+    CORE_CompleteTask(pool, ready_id);
+    /* make sure that the parent task's WorkCount is 1 - one for outstanding work */
+    task = &pool->TaskData[CORE_TaskIndexInPool(parent_id)];
+    if (task->WorkCount != 1)
+    {   /* the WorkCount is wrong */
+        res = -3;
+    }
+    /* return the task pool to the storage object */
+    CORE_ReleaseTaskPool(pool);
+    if (res == 0) ConsoleOutput("PASS.\n");
+    else          ConsoleOutput("FAIL %d.\n", res);
+    return res;
+}
+
 /*////////////////////////
 //   Public Functions   //
 ////////////////////////*/
@@ -914,6 +1311,29 @@ main
     /* now we can perform specific tests that just acquire and release pools from the storage */
     if (EnsureAllPoolsCanBeAcquiredAndReleased(storage, pool_types, pool_type_count) < 0)
         result = -1;
+    if (result) goto cleanup_and_exit;
+
+    /* perform task allocation, completion, etc. tests */
+    if (EnsureAllTaskSlotsCanBeAllocated(storage, CORE_TASK_POOL_ID_MAIN) < 0)
+        result = -1;
+    if (EnsureUnlaunchedTaskCannotComplete(storage, CORE_TASK_POOL_ID_MAIN) < 0)
+        result = -1;
+    if (EnsureLaunchedTaskCanComplete(storage, CORE_TASK_POOL_ID_MAIN) < 0)
+        result = -1;
+    if (EnsureTaskWithNoDependenciesMadeReadyToRunOnDefine(storage, CORE_TASK_POOL_ID_MAIN) < 0)
+        result = -1;
+    if (EnsureTaskWithNoDependenciesCanCompleteImmediate(storage, CORE_TASK_POOL_ID_MAIN) < 0)
+        result = -1;
+    if (EnsureTaskWithNoDependenciesCanCompleteDeferred(storage, CORE_TASK_POOL_ID_MAIN) < 0)
+        result = -1;
+    if (EnsureTaskCompletionReadiesDependencies(storage, CORE_TASK_POOL_ID_MAIN) < 0)
+        result = -1;
+    if (EnsureUncompletedChildTaskPreventsParentFromCompleting(storage, CORE_TASK_POOL_ID_MAIN) < 0)
+        result = -1;
+    if (EnsureCompletedChildTaskAllowsParentToComplete(storage, CORE_TASK_POOL_ID_MAIN) < 0)
+        result = -1;
+
+    if (result) goto cleanup_and_exit;
 
     /* other tests here */
     
