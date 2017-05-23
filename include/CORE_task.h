@@ -167,7 +167,7 @@ struct _CV_MARKERSERIES;
  */
 #ifndef CORE_TaskIdValid
 #define CORE_TaskIdValid(_id)                                                  \
-    (((_id) & CORE_TASK_ID_MASK_VALUE) != 0)
+    (((_id) & CORE_TASK_ID_MASK_VALID) != 0)
 #endif
 
 /* @summary Check whether a task ID represents an externally-completed task.
@@ -279,6 +279,18 @@ typedef struct _CORE_TASK_POOL_STORAGE_INIT {
     void                            *MemoryStart;           /* A pointer to the start of the memory block allocated for the storage array. */
     uint64_t                         MemorySize;            /* The total size of the memory block allocated for the storage array. */
 } CORE_TASK_POOL_STORAGE_INIT;
+
+/* @summary Define the data used to define a new task.
+ */
+typedef struct _CORE_TASK_INIT {
+    CORE_TaskMain_Func               EntryPoint;            /* The function to call to execute the task workload. This value must be NULL for externally-completed tasks. */
+    void                            *ArgumentData;          /* Optional data to be copied into the task. Specify NULL if no additional data is required. */
+    CORE_TASK_ID                    *DependencyList;        /* An optional list of task IDs specifying the tasks that must complete before this task can start. Specify NULL if the task has no dependencies. */
+    CORE_TASK_ID                     ParentTask;            /* The identifier of the parent task, or CORE_INVALID_TASK_ID if this task has no parent. */
+    uint32_t                         CompletionType;        /* One of _CORE_TASK_ID_TYPE specifying whether the task is internally- or externally-completed. */
+    uint32_t                         ArgumentDataSize;      /* The size of the task argument data, in bytes. This value must be less than or equal to CORE_MAX_TASK_DATA_BYTES. */
+    uint32_t                         DependencyCount;       /* The number of dependencies in the DependencyList. Specify zero if the task has no dependencies. */
+} CORE_TASK_INIT;
 
 /* @summary Define some identifiers that may be passed to CORE_MakeTaskId for the _type argument to make the code more readable.
  */
@@ -466,6 +478,109 @@ CORE_API(void)
 CORE_NotifyPoolHasTasksToSteal
 (
     struct _CORE_TASK_POOL *pool
+);
+
+/* @summary Initialize a CORE_TASK_INIT structure for an internally-completed root task.
+ * @param init The CORE_TASK_INIT to initialize.
+ * @param task_main The task entry point.
+ * @param task_args Optional argument data to associate with the task, or NULL. 
+ * @param args_size The size of the argument data, in bytes. The maximum size is CORE_MAX_TASK_DATA_BYTES.
+ * @param task_deps An optional list of task IDs for tasks that must complete before this new task can run.
+ * @param deps_count The number of task IDs specified in the dependency list.
+ * @return Zero if the task data is valid, or -1 if an error occurred.
+ */
+CORE_API(int)
+CORE_InitTask
+(
+    CORE_TASK_INIT         *init, 
+    CORE_TaskMain_Func task_main, 
+    void              *task_args, 
+    size_t             args_size, 
+    CORE_TASK_ID      *task_deps, 
+    size_t            deps_count
+);
+
+/* @summary Initialize a CORE_TASK_INIT structure for an internally-completed child task.
+ * @param init The CORE_TASK_INIT to initialize.
+ * @param parent_id The identifier of the parent task.
+ * @param task_main The task entry point.
+ * @param task_args Optional argument data to associate with the task, or NULL. 
+ * @param args_size The size of the argument data, in bytes. The maximum size is CORE_MAX_TASK_DATA_BYTES.
+ * @param task_deps An optional list of task IDs for tasks that must complete before this new task can run.
+ * @param deps_count The number of task IDs specified in the dependency list.
+ * @return Zero if the task data is valid, or -1 if an error occurred.
+ */
+CORE_API(int)
+CORE_InitChildTask
+(
+    CORE_TASK_INIT         *init, 
+    CORE_TASK_ID       parent_id,
+    CORE_TaskMain_Func task_main, 
+    void              *task_args, 
+    size_t             args_size, 
+    CORE_TASK_ID      *task_deps, 
+    size_t            deps_count
+);
+
+/* @summary Initialize a CORE_TASK_INIT structure for an externally-completed root task.
+ * @param init The CORE_TASK_INIT to initialize.
+ * @return Zero if the task data is valid, or -1 if an error occurred.
+ */
+CORE_API(int)
+CORE_InitExternalTask
+(
+    CORE_TASK_INIT *init
+);
+
+/* @summary Initialize a CORE_TASK_INIT structure for an externally-completed child task.
+ * @param init The CORE_TASK_INIT to initialize.
+ * @param parent_id The identifier of the parent task.
+ * @return Zero if the task data is valid, or -1 if an error occurred.
+ */
+CORE_API(int)
+CORE_InitExternalChildTask
+(
+    CORE_TASK_INIT   *init, 
+    CORE_TASK_ID parent_id
+);
+
+/* @summary Define a new task. 
+ * The task may start executing immediately, but cannot complete until CORE_LaunchTask is called with the returned task ID.
+ * The calling thread will block if the specified task pool does not have any available task slots.
+ * @param pool The _CORE_TASK_POOL owned by the calling thread. The task data is allocated from this pool.
+ * @param init Information about the task to create.
+ * @param error On return, if the task could not be created, this location is updated with an error code specifying the reason for the failure.
+ * @return The identifier of the new task, or CORE_INVALID_TASK_ID if the task could not be defined.
+ */
+CORE_API(CORE_TASK_ID)
+CORE_DefineTask
+(
+    struct _CORE_TASK_POOL *pool, 
+    CORE_TASK_INIT         *init
+);
+
+/* @summary Launch a task, indicating that it has been fully-defined, and allow the task to complete.
+ * @param pool The _CORE_TASK_POOL owned by the calling thread. This should be the same task pool passed to CORE_DefineTask.
+ * @param task_id The identifier of the task to launch, returned by a prior call to CORE_DefineTask.
+ * @return The number of tasks made ready-to-run, or -1 if an error occurred. This value may be zero if the task dependencies have not been satisfied.
+ */
+CORE_API(int)
+CORE_LaunchTask
+(
+    struct _CORE_TASK_POOL *pool, 
+    CORE_TASK_ID         task_id
+);
+
+/* @summary Indicate completion of a task.
+ * @param pool The _CORE_TASK_POOL owned by the thread that completed the task. This may be different than the task pool for the thread that defined the task.
+ * @param task_id The identifier of the completed task.
+ * @return The number of tasks made ready-to-run by the completion of this task, or -1 if an error occurred.
+ */
+CORE_API(int)
+CORE_CompleteTask
+(
+    struct _CORE_TASK_POOL *pool, 
+    CORE_TASK_ID         task_id
 );
 
 #ifdef __cplusplus
@@ -688,8 +803,8 @@ typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_POOL {
     uint32_t                              ThreadId;               /* The operating system identifier of the thread that owns this task pool. */
     uint32_t                              PoolIndex;              /* The zero-based index of the pool within the CORE_TASK_POOL_STORAGE. */
     uint32_t                              PoolId;                 /* One of _CORE_TASK_POOL_ID acting as an identifier for the pool type. */
-    int32_t                               LastError;              /* One of _CORE_TASK_DEFINITION_ERROR */
-    uint32_t                              StealThreshold;         /* */
+    uint32_t                              ReadyCount;             /* The number of tasks made ready within the pool since the last task was executed. */
+    uint32_t                              StealThreshold;         /* The number of tasks that can be defined within the pool without executing a task before posting steal notifications to wake up waiting workers. */
     CORE__TASK_SPMC_QUEUE                 ReadyTasks;             /* The deque of ready-to-run task IDs. The thread that owns the pool may Push and Take; other threads may only Steal. */
     CORE__TASK_MPMC_QUEUE                 FreeTasks;              /* The MPSC queue of available task slots. The thread that owns the pool is the consumer; threads that execute tasks are the producers. */
     CORE__TASK_SEMAPHORE                  Semaphore;              /* A semaphore used to sleep threads when there are no task data slots available. */
@@ -1711,6 +1826,82 @@ CORE__TaskSPMCQueueSteal
     }
 }
 
+/* @summary Indicate that a single unit of work has completed for a task.
+ * This would indicate that the task is fully defined, that the task itself completed, or that one of its child tasks completed.
+ * @param pool The _CORE_TASK_POOL that completed the task.
+ * @param task_id The identifier of the completed task.
+ * @param reset_define_count Specify non-zero to reset the task definition counter on the completing pool.
+ * This value should be zero when called from CORE_LaunchTask (indicating that the task is fully defined).
+ * This value should be non-zero when called from CORE_CompleteTask (indicating that a work item completed).
+ * @return The number of tasks ready-to-run.
+ */
+CORE_API(int)
+CORE__CompleteTask
+(
+    struct _CORE_TASK_POOL *pool, 
+    CORE_TASK_ID         task_id,
+    int        reset_ready_count
+)
+{
+    CORE__TASK_POOL **pool_list;
+    uint32_t          task_pool;
+    uint32_t          task_slot;
+    CORE__TASK_DATA  *task_data;
+    int32_t          work_count;
+    uint32_t          num_ready;
+
+    assert(pool != NULL);
+    assert(CORE_TaskIdValid(task_id));
+
+    /* multiple threads can be concurrently executing CORE_CompleteTask for the same task ID.
+     * this can happen when multiple child tasks have finished executing on separate threads.
+     * when the number of outstanding work items reaches zero, the task has actually completed.
+     */
+    num_ready = 0;
+    pool_list = pool->Storage->TaskPoolList;
+    task_pool = CORE_TaskPoolIndex(task_id);
+    task_slot = CORE_TaskIndexInPool(task_id);
+    task_data = &pool_list[task_pool]->TaskData[task_slot];
+    if ((work_count = CORE__TaskAtomicFetchAdd_s32(&task_data->WorkCount, -1, CORE__TASK_ATOMIC_ORDERING_SEQ_CST)) == 1)
+    {   /* process the permits list and possibly make tasks ready-to-run */
+        CORE_TASK_ID *permits_list = task_data->PermitIds;
+        int32_t       permit_count = _InterlockedExchange((volatile LONG*) &task_data->PermitCount, -1);
+        int32_t                  i;
+        for (i = 0; i < permit_count; ++i)
+        {
+            uint32_t         permit_pool = CORE_TaskPoolIndex(permits_list[i]);
+            uint32_t         permit_slot = CORE_TaskIndexInPool(permits_list[i]);
+            CORE__TASK_DATA *permit_data = &pool_list[permit_pool]->TaskData[permit_slot];
+            if (CORE__TaskAtomicFetchAdd_s32(&permit_data->WaitCount, +1, CORE__TASK_ATOMIC_ORDERING_SEQ_CST) == -1)
+            {   /* all of the dependencies for this task have been satisfied */
+                num_ready++;
+
+                /* only internally-completed tasks can be ready-to-run */
+                if (CORE_TaskIdInternal(permits_list[i]))
+                {   /* push the task onto the local ready-to-run queue */
+                    (void) CORE__TaskSPMCQueuePush(&pool->ReadyTasks, permits_list[i]);
+                    if (num_ready >= pool->StealThreshold)
+                    {   /* push a notification onto the global queue */
+                        CORE_NotifyPoolHasTasksToSteal(pool);
+                    }
+                }
+            }
+        }
+        if (CORE_TaskIdValid(task_data->ParentId))
+        {   /* bubble the completion up to the parent task */
+            num_ready += CORE__CompleteTask(pool, task_data->ParentId, reset_ready_count);
+        }
+        /* return the task_slot value to the free list for the target pool */
+        CORE__TaskMPMCQueuePush(&pool_list[task_pool]->FreeTasks, task_slot);
+        CORE__TaskSemaphorePost(&pool_list[task_pool]->Semaphore);
+    }
+    if (reset_ready_count && CORE_TaskIdInternal(task_id))
+    {   /* reset the ReadyCount field on the pool that completed the task */
+        pool->ReadyCount = 0;
+    }
+    return (int) num_ready;
+}
+
 /* @summary Implement a replacement for the strcmp function.
  * This function is not optimized and should not be used in performance-critical code.
  * @param str_a Pointer to a nul-terminated string. This value cannot be NULL.
@@ -2142,7 +2333,7 @@ CORE_CreateTaskPoolStorage
             pool->ThreadId        = 0;
             pool->PoolIndex       = pool_index;
             pool->PoolId          = init->TaskPoolTypes[i].PoolId;
-            pool->LastError       = 0;
+            pool->ReadyCount      = 0;
             pool->StealThreshold  = init->TaskPoolTypes[i].StealThreshold;
             stor->PoolFreeList[i] = pool;
             stor->TaskPoolList[pool_index++] = pool;
@@ -2268,9 +2459,9 @@ CORE_AcquireTaskPool
         {
             CORE__TaskMPMCQueuePush(&pool->FreeTasks, i);
         }
-        pool->NextPool  = NULL;
-        pool->ThreadId  = GetCurrentThreadId();
-        pool->LastError = 0;
+        pool->NextPool   = NULL;
+        pool->ThreadId   = GetCurrentThreadId();
+        pool->ReadyCount = 0;
     }
     return pool;
 }
@@ -2375,6 +2566,258 @@ CORE_NotifyPoolHasTasksToSteal
         CORE__TaskSemaphorePost(&storage->StealSemaphore);
     }
     /* else the queue was full - silently drop the notification */
+}
+
+CORE_API(int)
+CORE_InitTask
+(
+    CORE_TASK_INIT         *init, 
+    CORE_TaskMain_Func task_main, 
+    void              *task_args, 
+    size_t             args_size, 
+    CORE_TASK_ID      *task_deps, 
+    size_t            deps_count
+)
+{
+    if (task_main == NULL)
+    {   /* the task entry point is required */
+        assert(task_main != NULL);
+        ZeroMemory(init, sizeof(CORE_TASK_INIT));
+        return -1;
+    }
+    if (args_size > CORE_MAX_TASK_DATA_BYTES)
+    {   /* too much argument data is supplied for the task */
+        assert(args_size <= CORE_MAX_TASK_DATA_BYTES);
+        ZeroMemory(init, sizeof(CORE_TASK_INIT));
+        return -1;
+    }
+    if (args_size > 0 && task_args == NULL)
+    {   /* no argument data supplied, but non-zero size */
+        assert(task_args != NULL && "Non-zero argument data size");
+        ZeroMemory(init, sizeof(CORE_TASK_INIT));
+        return -1;
+    }
+    if (deps_count > 0 && task_deps == NULL)
+    {   /* no dependency list supplied, but non-zero length */
+        assert(task_deps != NULL && "Non-zero dependency list length");
+        ZeroMemory(init, sizeof(CORE_TASK_INIT));
+        return -1;
+    }
+    init->EntryPoint       = task_main;
+    init->ArgumentData     = task_args;
+    init->DependencyList   = task_deps;
+    init->ParentTask       = CORE_INVALID_TASK_ID;
+    init->CompletionType   = CORE_TASK_ID_INTERNAL;
+    init->ArgumentDataSize = (uint32_t) args_size;
+    init->DependencyCount  = (uint32_t) deps_count;
+    return 0;
+}
+
+CORE_API(int)
+CORE_InitChildTask
+(
+    CORE_TASK_INIT         *init, 
+    CORE_TASK_ID       parent_id,
+    CORE_TaskMain_Func task_main, 
+    void              *task_args, 
+    size_t             args_size, 
+    CORE_TASK_ID      *task_deps, 
+    size_t            deps_count
+)
+{
+    if (task_main == NULL)
+    {   /* the task entry point is required */
+        assert(task_main != NULL);
+        ZeroMemory(init, sizeof(CORE_TASK_INIT));
+        return -1;
+    }
+    if (!CORE_TaskIdValid(parent_id))
+    {   /* the parent task identifier is not a valid task ID */
+        assert(CORE_TaskIdValid(parent_id));
+        ZeroMemory(init, sizeof(CORE_TASK_INIT));
+        return -1;
+    }
+    if (args_size > CORE_MAX_TASK_DATA_BYTES)
+    {   /* too much argument data is supplied for the task */
+        assert(args_size <= CORE_MAX_TASK_DATA_BYTES);
+        ZeroMemory(init, sizeof(CORE_TASK_INIT));
+        return -1;
+    }
+    if (args_size > 0 && task_args == NULL)
+    {   /* no argument data supplied, but non-zero size */
+        assert(task_args != NULL && "Non-zero argument data size");
+        ZeroMemory(init, sizeof(CORE_TASK_INIT));
+        return -1;
+    }
+    if (deps_count > 0 && task_deps == NULL)
+    {   /* no dependency list supplied, but non-zero length */
+        assert(task_deps != NULL && "Non-zero dependency list length");
+        ZeroMemory(init, sizeof(CORE_TASK_INIT));
+        return -1;
+    }
+    init->EntryPoint       = task_main;
+    init->ArgumentData     = task_args;
+    init->DependencyList   = task_deps;
+    init->ParentTask       = parent_id;
+    init->CompletionType   = CORE_TASK_ID_INTERNAL;
+    init->ArgumentDataSize = (uint32_t) args_size;
+    init->DependencyCount  = (uint32_t) deps_count;
+    return 0;
+}
+
+CORE_API(int)
+CORE_InitExternalTask
+(
+    CORE_TASK_INIT *init
+)
+{
+    init->EntryPoint       = NULL;
+    init->ArgumentData     = NULL;
+    init->DependencyList   = NULL;
+    init->ParentTask       = CORE_INVALID_TASK_ID;
+    init->CompletionType   = CORE_TASK_ID_EXTERNAL;
+    init->ArgumentDataSize = 0;
+    init->DependencyCount  = 0;
+    return 0;
+}
+
+CORE_API(int)
+CORE_InitExternalChildTask
+(
+    CORE_TASK_INIT   *init, 
+    CORE_TASK_ID parent_id
+)
+{
+    if (!CORE_TaskIdValid(parent_id))
+    {   /* the parent task identifier is not a valid task ID */
+        assert(CORE_TaskIdValid(parent_id));
+        ZeroMemory(init, sizeof(CORE_TASK_INIT));
+        return -1;
+    }
+    init->EntryPoint       = NULL;
+    init->ArgumentData     = NULL;
+    init->DependencyList   = NULL;
+    init->ParentTask       = parent_id;
+    init->CompletionType   = CORE_TASK_ID_EXTERNAL;
+    init->ArgumentDataSize = 0;
+    init->DependencyCount  = 0;
+    return 0;
+}
+
+CORE_API(CORE_TASK_ID)
+CORE_DefineTask
+(
+    struct _CORE_TASK_POOL *pool, 
+    CORE_TASK_INIT         *init
+)
+{
+    CORE__TASK_POOL **pool_list;
+    CORE__TASK_DATA  *task_data;
+    CORE_TASK_ID        task_id;
+    uint32_t          task_slot;
+    uint32_t               i, n;
+    int                   ready;
+
+    assert(pool != NULL);
+    assert(pool->ThreadId == GetCurrentThreadId());
+    assert(init->ArgumentDataSize <= CORE_MAX_TASK_DATA_BYTES);
+
+    pool_list = pool->Storage->TaskPoolList;
+    if (CORE_TaskIdValid(init->ParentTask))
+    {   /* add an outstanding work item on the parent task */
+        uint32_t         parent_pool = CORE_TaskPoolIndex(init->ParentTask);
+        uint32_t         parent_slot = CORE_TaskIndexInPool(init->ParentTask);
+        CORE__TASK_DATA *parent_data = &pool_list[parent_pool]->TaskData[parent_slot];
+        CORE__TaskAtomicFetchAdd_s32(&parent_data->WorkCount, +1, CORE__TASK_ATOMIC_ORDERING_SEQ_CST);
+    }
+
+    /* acquire an available task slot index from the pool-local free list.
+     * this may block the calling thread if no data slots are available.
+     */
+    for ( ; ; )
+    {
+        CORE__TaskSemaphoreWait(&pool->Semaphore, 4096);
+        if (CORE__TaskMPMCQueueTake(&pool->FreeTasks, &task_slot))
+            break; /* retrieved an available task slot index */
+    }
+
+    /* initialize the task data slot.
+     * the WorkCount field starts at 2, one for the task definition and one for the actual work.
+     * this ensures that the task cannot complete (though it may execute) before CORE_DefineTask returns.
+     */
+    task_id   = CORE_MakeTaskId(init->CompletionType, pool->PoolIndex, task_slot, CORE_TASK_ID_VALID);
+    task_data = &pool->TaskData[task_slot];
+    task_data->WaitCount       =-((int32_t) init->DependencyCount);
+    task_data->ParentId        = init->ParentTask;
+    task_data->TaskMain        = init->EntryPoint;
+    task_data->WorkCount       = 2;
+    task_data->PermitCount     = 0;
+    if (init->ArgumentDataSize > 0)
+    {   /* copy the argument data into the local task data */
+        CopyMemory(task_data->TaskData, init->ArgumentData, init->ArgumentDataSize);
+    }
+    /* make sure the preceeding writes are visible */
+    MemoryBarrier(); _ReadWriteBarrier();
+
+    /* convert dependencies into permits, which may make the task not ready-to-run. */
+    ready  = init->DependencyCount > 0 ? 0 : 1;
+    for (i = 0, n = init->DependencyCount; i < n; ++i)
+    {
+        uint32_t         permit_pool = CORE_TaskPoolIndex(init->DependencyList[i]);
+        uint32_t         permit_slot = CORE_TaskIndexInPool(init->DependencyList[i]);
+        CORE__TASK_DATA *permit_data = &pool_list[permit_pool]->TaskData[permit_slot];
+        int32_t             permit_n = CORE__TaskAtomicLoad_s32(&permit_data->PermitCount, CORE__TASK_ATOMIC_ORDERING_RELAXED);
+        do
+        {
+            if (permit_n < 0 || permit_n > CORE_MAX_TASK_PERMITS)
+            {   /* this dependency has already completed.
+                 * remove an item from the WaitCount; if the WaitCount is now zero the task is ready-to-run.
+                 * the increment must be atomic because a previously-created permit may be completing concurrently.
+                 */
+                assert(permit_n <= CORE_MAX_TASK_PERMITS && "permit count exceeded - redesign task structure");
+                if (CORE__TaskAtomicFetchAdd_s32(&task_data->WaitCount, +1, CORE__TASK_ATOMIC_ORDERING_SEQ_CST) == -1)
+                    ready = 1;
+                break; /* do not increment permit_data->PermitCount */
+            }
+            permit_data->PermitIds[permit_n] = task_id;
+            ready = 0;
+        } while (CORE__TaskAtomicCompareAndSwap_s32(&permit_data->PermitCount, &permit_n, permit_n+1, 1, CORE__TASK_ATOMIC_ORDERING_SEQ_CST, CORE__TASK_ATOMIC_ORDERING_RELAXED) == 0);
+    }
+
+    if (ready && init->CompletionType != CORE_TASK_ID_EXTERNAL)
+    {   /* this task is ready-to-run, so push it onto the work queue */
+        pool->ReadyCount++;
+        (void) CORE__TaskSPMCQueuePush(&pool->ReadyTasks, task_id);
+        if (pool->ReadyCount >= pool->StealThreshold)
+        {   /* post a notification to the global queue that this pool has task(s) available to steal */
+            CORE_NotifyPoolHasTasksToSteal(pool);
+        }
+    }
+    return task_id;
+}
+
+CORE_API(int)
+CORE_LaunchTask
+(
+    struct _CORE_TASK_POOL *pool, 
+    CORE_TASK_ID         task_id
+)
+{
+    #define DO_NOT_RESET_READY_COUNT 0
+    return CORE__CompleteTask(pool, task_id, DO_NOT_RESET_READY_COUNT);
+    #undef  DO_NOT_RESET_READY_COUNT
+}
+
+CORE_API(int)
+CORE_CompleteTask
+(
+    struct _CORE_TASK_POOL *pool, 
+    CORE_TASK_ID         task_id
+)
+{
+    #define RESET_READY_COUNT 1
+    return CORE__CompleteTask(pool, task_id, RESET_READY_COUNT);
+    #undef  RESET_READY_COUNT
 }
 
 #endif /* CORE_TASK_IMPLEMENTATION */
