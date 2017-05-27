@@ -50,6 +50,7 @@ SET CORE_TEST_CLIENT_OUTPUT=CORE_client.exe
 SET CORE_MEMTEST_OUTPUT=CORE_memtest.exe
 SET CORE_HTTP_TEST_OUTPUT=CORE_httptest.exe
 SET CORE_TASK_TEST_OUTPUT=CORE_tasktest.exe
+SET CORE_RAYTRACER_OUTPUT=CORE_raytrace.exe
 
 :: Set the appropriate Visual C++ toolset environment.
 IF /I "%1" EQU "32" (
