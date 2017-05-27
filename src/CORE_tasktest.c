@@ -110,12 +110,16 @@ ResetSPMCQueue
 static void
 TaskMainNoOp
 (
-    CORE_TASK_ID task_id, 
-    void      *task_args
+    CORE_TASK_ID              task_id, 
+    void                   *task_args, 
+    struct _CORE_TASK_POOL *task_pool, 
+    void                     *context
 )
 {
     UNREFERENCED_PARAMETER(task_id);
     UNREFERENCED_PARAMETER(task_args);
+    UNREFERENCED_PARAMETER(task_pool);
+    UNREFERENCED_PARAMETER(context);
 }
 
 static int
@@ -916,7 +920,7 @@ EnsureTaskWithNoDependenciesCanCompleteImmediate
     /* take the item from the ready queue and execute it before the caller can call CORE_LaunchTask */
     CORE__TaskSPMCQueueTake(&pool->ReadyTasks, &ready_id, &more);
     task = &pool->TaskData[CORE_TaskIndexInPool(ready_id)];
-    task->TaskMain(ready_id, task->TaskData);
+    task->TaskMain(ready_id, task->TaskData, pool, NULL);
     CORE_CompleteTask(pool, ready_id);
     /* now call CORE_LaunchTask, which should allow the task to actually complete */
     CORE_LaunchTask(pool, task_id);
@@ -963,7 +967,7 @@ EnsureTaskWithNoDependenciesCanCompleteDeferred
     /* take the item from the ready queue and execute it after the creator called CORE_LaunchTask */
     CORE__TaskSPMCQueueTake(&pool->ReadyTasks, &ready_id, &more);
     task = &pool->TaskData[CORE_TaskIndexInPool(ready_id)];
-    task->TaskMain(ready_id, task->TaskData);
+    task->TaskMain(ready_id, task->TaskData, pool, NULL);
     CORE_CompleteTask(pool, ready_id);
     /* make sure that the task's WorkCount is zero and PermitCount is -1 */
     task = &pool->TaskData[CORE_TaskIndexInPool(task_id)];
@@ -1022,7 +1026,7 @@ EnsureTaskCompletionReadiesDependencies
         res = -2;
     }
     task = &pool->TaskData[CORE_TaskIndexInPool(ready_id)];
-    task->TaskMain(ready_id, task->TaskData);
+    task->TaskMain(ready_id, task->TaskData, pool, NULL);
     CORE_CompleteTask(pool, ready_id);
     /* now that task_id_a has completed, task_id_b should appear in the ready-to-run queue */
     if (res == 0 && CORE__TaskSPMCQueueTake(&pool->ReadyTasks, &ready_id, &more) == 0)
@@ -1120,7 +1124,7 @@ EnsureCompletedChildTaskAllowsParentToComplete
         res = -2;
     }
     task = &pool->TaskData[CORE_TaskIndexInPool(ready_id)];
-    task->TaskMain(ready_id, task->TaskData);
+    task->TaskMain(ready_id, task->TaskData, pool, NULL);
     CORE_CompleteTask(pool, ready_id);
     /* make sure that the parent task's WorkCount is 1 - one for outstanding work */
     task = &pool->TaskData[CORE_TaskIndexInPool(parent_id)];
