@@ -223,12 +223,31 @@ typedef uint32_t CORE_TASK_ID;
 /* @summary Define the signature for the entry point of a task.
  * @param task_id The identifier of the task being executed.
  * @param task_args A pointer to the task-local data buffer used to store task parameters specified when the task was defined.
- * @param task_env The task execution environment, which can be used to define additional tasks or to allocate scratch memory.
+ * @param task_pool The task pool owned by the thread executing the task, which can be used to define additional tasks.
+ * @param context Opaque data to passed through to each task as it executes.
  */
 typedef void   (*CORE_TaskMain_Func)
 (
     CORE_TASK_ID                      task_id, 
-    void                           *task_args
+    void                           *task_args, 
+    struct _CORE_TASK_POOL         *task_pool, 
+    void                             *context
+);
+
+/* @summary Define the signature for the callback function invoked to perform initialization for an task system worker thread.
+ * The callback should allocate any per-thread data it needs and return a pointer to that data in the thread_context parameter.
+ * @param worker_thread_pool The task worker thread pool that owns the worker thread.
+ * @param thread_task_pool The _CORE_TASK_POOL allocated to the worker thread.
+ * @param worker_pool_context Opaque data supplied when the worker thread pool was created.
+ * @param thread_context On return, the function should update this value to point to any data to be associated with the thread.
+ * @return Zero if initialization completes successfully, or -1 if initialization failed.
+ */
+typedef int    (*CORE_TaskWorkerInit_Func)
+(
+    struct _CORE_TASK_WORKER_POOL *worker_thread_pool,
+    struct _CORE_TASK_POOL          *thread_task_pool, 
+    uintptr_t                     worker_pool_context,
+    uintptr_t                         *thread_context
 );
 
 /* @summary Define information describing the CPU layout of the host system.
@@ -291,6 +310,17 @@ typedef struct _CORE_TASK_INIT {
     uint32_t                         ArgumentDataSize;      /* The size of the task argument data, in bytes. This value must be less than or equal to CORE_MAX_TASK_DATA_BYTES. */
     uint32_t                         DependencyCount;       /* The number of dependencies in the DependencyList. Specify zero if the task has no dependencies. */
 } CORE_TASK_INIT;
+
+/* @summary Define the configuration data used to create a task worker thread pool.
+ */
+typedef struct _CORE_TASK_WORKER_POOL_INIT {
+    struct _CORE_TASK_POOL_STORAGE  *TaskPoolStorage;       /* The task pool storage object that worker threads will use to acquire their _CORE_TASK_POOL instances. */
+    CORE_TaskWorkerInit_Func         ThreadInitFunc;        /* The callback function to invoke to create any thread-local data, passed through to tasks as the context parameter. */
+    uintptr_t                        PoolContext;           /* Opaque data associated with the thread pool and available to all worker threads. */
+    void                            *PoolMemory;            /* The owner-managed memory block used for all storage within the pool. */
+    uint64_t                         PoolMemorySize;        /* The size of the pool memory block, in bytes. This value can be determined for a given pool capacity using the CORE_QueryTaskWorkerPoolMemorySize. */
+    uint32_t                         WorkerCount;           /* The number of worker threads in the pool. */
+} CORE_TASK_WORKER_POOL_INIT;
 
 /* @summary Define some identifiers that may be passed to CORE_MakeTaskId for the _type argument to make the code more readable.
  */
@@ -457,6 +487,16 @@ CORE_QueryTaskPoolCapacity
     struct _CORE_TASK_POOL *pool
 );
 
+/* @summary Retrieve the operating system identifier of the thread that owns a task pool.
+ * @param pool The _CORE_TASK_POOL to query.
+ * @return The operating system identifier of the thread that owns the task pool.
+ */
+CORE_API(uint32_t)
+CORE_QueryTaskPoolThreadId
+(
+    struct _CORE_TASK_POOL *pool
+);
+
 /* @summary Wait until a task pool indicates that it has tasks available to steal.
  * If external threads have indicated they have tasks available to steal, the calling thread does not block.
  * If no tasks are available to steal, the calling thread blocks until a thread indicates work availability.
@@ -581,6 +621,50 @@ CORE_CompleteTask
 (
     struct _CORE_TASK_POOL *pool, 
     CORE_TASK_ID         task_id
+);
+
+/* @summary Wait for a given task to complete. While waiting, the calling thread executes available tasks.
+ * @param pool The _CORE_TASK_POOL owned by the calling thread.
+ * @param wait_id The identifier of the task to wait for.
+ * @param context Opaque data to pass through to each task as it executes.
+ */
+CORE_API(void)
+CORE_WaitForTask
+(
+    struct _CORE_TASK_POOL *pool, 
+    CORE_TASK_ID         wait_id, 
+    void                *context
+);
+
+/* @summary Determine the amount of memory required to initialize a task worker thread pool with the given configuration.
+ * @param worker_count The number of worker threads in the pool.
+ * @return The minimum number of bytes required to successfully initialize a task worker thread pool with the given configuration.
+ */
+CORE_API(size_t)
+CORE_QueryTaskWorkerPoolMemorySize
+(
+    uint32_t worker_count
+);
+
+/* @summary Initialize and launch a pool of worker threads to execute tasks.
+ * @param pool On return, this location is updated with a pointer to the thread pool object.
+ * @param init Data used to configure the pool of worker threads.
+ * @return Zero if the thread pool is successfully initialized, or -1 if an error occurred.
+ */
+CORE_API(int)
+CORE_LaunchTaskWorkerPool
+(
+    struct _CORE_TASK_WORKER_POOL **pool, 
+    CORE_TASK_WORKER_POOL_INIT     *init
+);
+
+/* @summary Stop all threads and free all resources associated with a pool of task worker threads.
+ * @param pool The _CORE_TASK_WORKER_POOL to terminate and delete.
+ */
+CORE_API(void)
+CORE_TerminateTaskWorkerPool
+(
+    struct _CORE_TASK_WORKER_POOL *pool
 );
 
 #ifdef __cplusplus
@@ -827,14 +911,42 @@ typedef struct CORE_TASK_CACHELINE_ALIGN _CORE_TASK_POOL_STORAGE {
     CORE__TASK_SEMAPHORE                  StealSemaphore;         /* The semaphore used to sleep threads when no tasks are available to steal. */
 } CORE__TASK_POOL_STORAGE;
 
+/* @summary Define the data associated with a pool of worker threads that execute tasks submitted through the task module.
+ */
+typedef struct _CORE_TASK_WORKER_POOL {
+    struct _CORE_TASK_POOL_STORAGE       *TaskPoolStorage;        /* The task pool storage object that worker threads will use to acquire their _CORE_TASK_POOL instances. */
+    uint32_t                              ActiveThreads;          /* The number of active worker threads in the pool. */
+    uint32_t                              WorkerCount;            /* The number of configured worker threads in the pool. */
+    unsigned int                         *OSThreadIds;            /* An array of WorkerCount operating system thread identifiers, of which ActiveThreads entries are valid. */
+    HANDLE                               *OSThreadHandle;         /* An array of WorkerCount operating system thread handles, of which ActiveThreads entries are valid. */
+    HANDLE                               *WorkerReady;            /* An array of WorkerCount manual-reset event handles, of which ActiveThreads entries are valid. */
+    HANDLE                               *WorkerError;            /* An array of WorkerCount manual-reset event handles, of which ActiveThreads entries are valid. */
+    HANDLE                                TerminateSignal;        /* A manual-reset event to be signaled when the worker threads should terminate. */
+    uintptr_t                             ContextData;            /* Opaque data associated with the thread pool and available to all worker threads. */
+    void                                 *PoolMemory;             /* The owner-managed memory block used for all storage within the pool. */
+    uint64_t                              PoolMemorySize;         /* The size of the pool memory block, in bytes. This value can be determined for a given pool capacity using CORE_QueryTaskWorkerPoolMemorySize. */
+} CORE__TASK_WORKER_POOL;
+
+/* @summary Define the data passed to a task pool worker thread during initialization.
+ */
+typedef struct _CORE__TASK_WORKER_THREAD_INIT {
+    CORE__TASK_WORKER_POOL               *WorkerPool;             /* The task worker thread pool that owns the thread. */
+    CORE_TaskWorkerInit_Func              ThreadInit;             /* The callback function used to initialize thread-local data to be passed through to the tasks during execution. */
+    CORE__TASK_POOL_STORAGE              *TaskPoolStorage;        /* The task pool storage object that worker threads will use to acquire their _CORE_TASK_POOL instances. */
+    HANDLE                                ReadySignal;            /* A manual-reset event to be signaled by the worker thread when it has successfully initialized. */
+    HANDLE                                ErrorSignal;            /* A manual-reset event to be signaled by the worker thread if it encounters a fatal error. */
+    HANDLE                                TerminateSignal;        /* A manual-reset event to be signaled by the application when the worker thread should terminate. */
+    uintptr_t                             PoolContext;            /* Opaque data associated with the thread pool. */
+} CORE__TASK_WORKER_THREAD_INIT;
+
 /* @summary Define the supported memory ordering constraints for atomic operations.
  */
 typedef enum _CORE__TASK_ATOMIC_ORDERING {
-    CORE__TASK_ATOMIC_ORDERING_RELAXED   = 0,                /* No inter-thread ordering constraints. */
-    CORE__TASK_ATOMIC_ORDERING_ACQUIRE   = 1,                /* Imposes a happens-before constraint from a store-release. Subsequent loads are not hoisted. */
-    CORE__TASK_ATOMIC_ORDERING_RELEASE   = 2,                /* Imposes a happens-before constraint to a load-acquire. Preceeding stores are not sunk. */
-    CORE__TASK_ATOMIC_ORDERING_ACQ_REL   = 3,                /* Combine ACQUIRE and RELEASE semantics. Subsequent loads are not hoisted, preceeding stores are not sunk. */
-    CORE__TASK_ATOMIC_ORDERING_SEQ_CST   = 4,                /* Enforce total ordering (sequential consistency) with all other SEQ_CST operations. */
+    CORE__TASK_ATOMIC_ORDERING_RELAXED   = 0,                     /* No inter-thread ordering constraints. */
+    CORE__TASK_ATOMIC_ORDERING_ACQUIRE   = 1,                     /* Imposes a happens-before constraint from a store-release. Subsequent loads are not hoisted. */
+    CORE__TASK_ATOMIC_ORDERING_RELEASE   = 2,                     /* Imposes a happens-before constraint to a load-acquire. Preceeding stores are not sunk. */
+    CORE__TASK_ATOMIC_ORDERING_ACQ_REL   = 3,                     /* Combine ACQUIRE and RELEASE semantics. Subsequent loads are not hoisted, preceeding stores are not sunk. */
+    CORE__TASK_ATOMIC_ORDERING_SEQ_CST   = 4,                     /* Enforce total ordering (sequential consistency) with all other SEQ_CST operations. */
 } CORE__TASK_ATOMIC_ORDERING;
 
 /* @summary Initialize a memory arena allocator around an externally-managed memory block.
@@ -1826,6 +1938,45 @@ CORE__TaskSPMCQueueSteal
     }
 }
 
+/* @summary Wake one or more worker threads that may be blocked waiting on the global steal queue semaphore.
+ * @param storage The _CORE_TASK_POOL_STORAGE object associated with the thread pool.
+ * @param worker_count The number of worker threads to wake.
+ */
+static void
+CORE__WakeTaskWorkerThreads
+(
+    struct _CORE_TASK_POOL_STORAGE *storage, 
+    uint32_t                   worker_count
+)
+{
+    CORE__TaskSemaphorePostCount(&storage->StealSemaphore, (int32_t) worker_count);
+}
+
+/* @summary Randomly select a task pool to steal work from.
+ * @param pool The _CORE_TASK_POOL owned by the calling thread.
+ * @return The _CORE_TASK_POOL to steal from.
+ */
+static struct _CORE_TASK_POOL*
+CORE__SelectVictimTaskPool
+(
+    struct _CORE_TASK_POOL *pool
+)
+{
+    CORE__TASK_POOL_STORAGE *storage = pool->Storage;
+    CORE__TASK_PRNG            *prng =&pool->RngState;
+    uint32_t              pool_index = pool->PoolIndex;
+    uint32_t              pool_count = storage->TaskPoolCount;
+    uint32_t            victim_index;
+    if (pool_count > 1)
+    {
+        do /* select a victim at random */
+        { victim_index = CORE__TaskRandomInRange_u32(prng, 0, pool_count);
+        } while (victim_index == pool_index);
+        return storage->TaskPoolList[victim_index];
+    }
+    return pool;
+}
+
 /* @summary Indicate that a single unit of work has completed for a task.
  * This would indicate that the task is fully defined, that the task itself completed, or that one of its child tasks completed.
  * @param pool The _CORE_TASK_POOL that completed the task.
@@ -1835,7 +1986,7 @@ CORE__TaskSPMCQueueSteal
  * This value should be non-zero when called from CORE_CompleteTask (indicating that a work item completed).
  * @return The number of tasks ready-to-run.
  */
-CORE_API(int)
+static int
 CORE__CompleteTask
 (
     struct _CORE_TASK_POOL *pool, 
@@ -1900,6 +2051,114 @@ CORE__CompleteTask
         pool->ReadyCount = 0;
     }
     return (int) num_ready;
+}
+
+/* @summary Implement a default, no-op function invoked to perform initialization for a task system worker thread.
+ * The callback does not allocate any per-thread data, and the thread_context is set to zero.
+ * @param worker_thread_pool The task worker thread pool that owns the worker thread.
+ * @param thread_task_pool The _CORE_TASK_POOL allocated to the worker thread.
+ * @param worker_pool_context Opaque data supplied when the worker thread pool was created.
+ * @param thread_context On return, the function should update this value to point to any data to be associated with the thread.
+ * @return Zero if initialization completes successfully, or -1 if initialization failed.
+ */
+static int
+CORE__TaskWorkerThreadInitDefault
+(
+    struct _CORE_TASK_WORKER_POOL *worker_thread_pool,
+    struct _CORE_TASK_POOL          *thread_task_pool,
+    uintptr_t                     worker_pool_context, 
+    uintptr_t                         *thread_context
+)
+{
+    UNREFERENCED_PARAMETER(worker_thread_pool);
+    UNREFERENCED_PARAMETER(worker_pool_context);
+    UNREFERENCED_PARAMETER(thread_task_pool);
+    *thread_context = 0;
+    return 0;
+}
+
+/* @summary Implement the entry point for a task system worker thread.
+ * @param argp A pointer to a CORE__TASK_WORKER_THREAD_INIT structure that is valid until the thread sets the ReadySignal event.
+ * @return The thread exit code. A value of zero indicates normal thread exit.
+ */
+static unsigned int __stdcall
+CORE__TaskWorkerThreadMain
+(
+    void *argp
+)
+{
+    CORE__TASK_WORKER_THREAD_INIT *init = (CORE__TASK_WORKER_THREAD_INIT*) argp;
+    CORE__TASK_POOL_STORAGE    *storage =  init->TaskPoolStorage;
+    CORE__TASK_POOL         **pool_list =  storage->TaskPoolList;
+    CORE__TASK_POOL        *thread_pool =  NULL;
+    CORE__TASK_POOL        *victim_pool =  NULL;
+    CORE__TASK_DATA          *task_data =  NULL;
+    uintptr_t                  pool_ctx =  init->PoolContext;
+    uintptr_t                thread_ctx =  0;
+    HANDLE                         term =  init->TerminateSignal;
+    unsigned int              exit_code = 0;
+    CORE_TASK_ID                task_id;
+    uint32_t                  task_pool;
+    uint32_t                  task_slot;
+    int                            more;
+
+    /* acquire a task pool from the storage object */
+    if ((thread_pool = CORE_AcquireTaskPool(storage, CORE_TASK_POOL_ID_WORKER)) == NULL)
+    {   /* no task storage pool was available for use by this thread */
+        SetEvent(init->ErrorSignal);
+        return 1;
+    }
+    /* allow the startup routine to run and initialize the thread context */
+    if (init->ThreadInit(init->WorkerPool, thread_pool, pool_ctx, &thread_ctx) < 0)
+    {   /* the initialization callback returned an error */
+        CORE_ReleaseTaskPool(thread_pool);
+        SetEvent(init->ErrorSignal);
+        return 2;
+    }
+
+    /* past this point, it is not valid to access any fields of init */
+    SetEvent(init->ReadySignal); init = NULL;
+    __try
+    {   /* enter the main thread loop, waiting until tasks are available and then doing as much work as possible */
+        for ( ; ; )
+        {   /* wait until another thread has work available to steal */
+            victim_pool = CORE_WaitForExternalTasks(thread_pool);
+            /* the thread might have been woken because it's time to shutdown */
+            if (WaitForSingleObject(term, 0) == WAIT_TIMEOUT)
+            {   /* it's not time to shutdown - try to steal a task */
+                if (victim_pool == thread_pool)
+                    continue;
+                if (CORE__TaskSPMCQueueSteal(&victim_pool->ReadyTasks, &task_id, &more) == 0) 
+                    continue;
+
+                /* at this point a task has been stolen - execute it */
+                task_pool = CORE_TaskPoolIndex(task_id);
+                task_slot = CORE_TaskIndexInPool(task_id);
+                task_data =&pool_list[task_pool]->TaskData[task_slot];
+                task_data->TaskMain(task_id, task_data->TaskData, thread_pool, (void*) thread_ctx);
+                CORE__CompleteTask(thread_pool, task_id, 1);
+
+                /* executing the stolen task may have produced additional tasks */
+                while (CORE__TaskSPMCQueueTake(&thread_pool->ReadyTasks, &task_id, &more))
+                {   /* a task was available in the local ready-to-run queue */
+                    task_pool = CORE_TaskPoolIndex(task_id);
+                    task_slot = CORE_TaskIndexInPool(task_id);
+                    task_data =&pool_list[task_pool]->TaskData[task_slot];
+                    task_data->TaskMain(task_id, task_data->TaskData, thread_pool, (void*) thread_ctx);
+                    CORE__CompleteTask(thread_pool, task_id, 1);
+                }
+            }
+            else
+            {   /* it's time to shutdown the worker thread */
+                break; /* break out of main for ( ; ; ) */
+            }
+        } /* end for ( ; ; ) */
+    }
+    __finally
+    {   /* the worker thread is terminating - perform any cleanup */
+        CORE_ReleaseTaskPool(thread_pool);
+        return exit_code;
+    }
 }
 
 /* @summary Implement a replacement for the strcmp function.
@@ -2528,6 +2787,15 @@ CORE_QueryTaskPoolCapacity
     return pool->Capacity;
 }
 
+CORE_API(uint32_t)
+CORE_QueryTaskPoolThreadId
+(
+    struct _CORE_TASK_POOL *pool
+)
+{
+    return pool->ThreadId;
+}
+
 CORE_API(struct _CORE_TASK_POOL*)
 CORE_WaitForExternalTasks
 (
@@ -2818,6 +3086,253 @@ CORE_CompleteTask
     #define RESET_READY_COUNT 1
     return CORE__CompleteTask(pool, task_id, RESET_READY_COUNT);
     #undef  RESET_READY_COUNT
+}
+
+CORE_API(void)
+CORE_WaitForTask
+(
+    struct _CORE_TASK_POOL *pool, 
+    CORE_TASK_ID         wait_id, 
+    void                *context
+)
+{
+    if (CORE_TaskIdValid(wait_id))
+    {
+        struct _CORE_TASK_POOL     *victim = pool;
+        struct _CORE_TASK_POOL **pool_list = pool->Storage->TaskPoolList;
+        uint32_t                pool_count = pool->Storage->TaskPoolCount;
+        uint32_t                 wait_pool = CORE_TaskPoolIndex(wait_id);
+        uint32_t                 wait_slot = CORE_TaskIndexInPool(wait_id);
+        CORE__TASK_DATA         *wait_data =&pool_list[wait_pool]->TaskData[wait_slot];
+        uint32_t              max_attempts = pool_count * 3;
+        uint32_t             attempt_count = 0;
+        uint32_t                 work_pool;
+        uint32_t                 work_slot;
+        CORE__TASK_DATA         *work_data;
+        CORE_TASK_ID               work_id;
+        int                           more;
+
+        /* when a task completes, the WorkCount field drops to zero */
+        while (CORE__TaskAtomicLoad_s32(&wait_data->WorkCount, CORE__TASK_ATOMIC_ORDERING_RELAXED) > 0)
+        {   /* the task hasn't completed yet, so attempt to take a task from the local queue */
+            if (CORE__TaskSPMCQueueTake(&pool->ReadyTasks, &work_id, &more) == 0)
+            {   /* the local queue doesn't have any work items, try and steal one */
+                attempt_count = 0;
+                for ( ; ; )
+                {   /* first check to see whether the task has completed */
+                    if (CORE__TaskAtomicLoad_s32(&wait_data->WorkCount, CORE__TASK_ATOMIC_ORDERING_RELAXED) == 0)
+                        return;
+                    /* select victims at random until a task can be stolen */
+                    /* don't poll the global steal queue because completion might be missed */
+                    victim = CORE__SelectVictimTaskPool(pool);
+                    if (CORE__TaskSPMCQueueSteal(&victim->ReadyTasks, &work_id, &more))
+                        break;
+                    /* after a reasonable number of steal attempts, yield the processor */
+                    if (++attempt_count == max_attempts)
+                    {
+                        if (!SwitchToThread())
+                            Sleep(1);
+                        attempt_count = 0;
+                    }
+                }
+            }
+            /* at this point, work_id identifies a valid task - execute it */
+            work_pool = CORE_TaskPoolIndex(work_id);
+            work_slot = CORE_TaskIndexInPool(work_id);
+            work_data =&pool_list[work_pool]->TaskData[work_slot];
+            work_data->TaskMain(work_id, work_data->TaskData, pool, context);
+            CORE__CompleteTask(pool, work_id, 1);
+        }
+    }
+}
+
+CORE_API(size_t)
+CORE_QueryTaskWorkerPoolMemorySize
+(
+    uint32_t worker_count
+)
+{
+    size_t  required_size = 0;
+    /* calculate the amount of memory required for the data stored directly in _CORE_TASK_WORKER_POOL.
+     * this includes the size of the structure itself, since all data is private.
+     */
+    required_size += CORE__TaskAllocationSizeType (CORE__TASK_WORKER_POOL);
+    required_size += CORE__TaskAllocationSizeArray(unsigned int, worker_count);  /* OSThreadIds    */
+    required_size += CORE__TaskAllocationSizeArray(HANDLE      , worker_count);  /* OSThreadHandle */
+    required_size += CORE__TaskAllocationSizeArray(HANDLE      , worker_count);  /* WorkerReady    */
+    required_size += CORE__TaskAllocationSizeArray(HANDLE      , worker_count);  /* WorkerError    */
+    return required_size;
+}
+
+CORE_API(int)
+CORE_LaunchTaskWorkerPool
+(
+    struct _CORE_TASK_WORKER_POOL **pool, 
+    CORE_TASK_WORKER_POOL_INIT     *init
+)
+{
+    CORE__TASK_ARENA            arena;
+    CORE__TASK_WORKER_POOL *task_pool = NULL;
+    size_t              required_size = 0;
+    HANDLE                       term = NULL;
+    int                      shutdown = 0;
+    uint32_t                     i, n;
+
+    if (init->WorkerCount == 0)
+    {   /* the thread pool must have at least one worker */
+        assert(init->WorkerCount > 0);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    if (init->TaskPoolStorage == NULL)
+    {   /* the caller must supply a _CORE_TASK_POOL_STORAGE object */
+        assert(init->TaskPoolStorage != NULL);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    if (init->PoolMemory == NULL || init->PoolMemorySize == 0)
+    {   /* the caller must supply memory for the pool data */
+        assert(init->PoolMemory != NULL);
+        assert(init->PoolMemorySize > 0);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+
+    required_size = CORE_QueryTaskWorkerPoolMemorySize(init->WorkerCount);
+    if (init->PoolMemorySize < required_size)
+    {   /* the caller must supply enough memory for the pool */
+        assert(init->PoolMemorySize >= required_size);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    if (init->ThreadInitFunc == NULL)
+    {   /* use the default no-op thread initialization function */
+        init->ThreadInitFunc = CORE__TaskWorkerThreadInitDefault;
+    }
+    if ((term = CreateEvent(NULL, TRUE, FALSE, NULL)) == NULL)
+    {   /* failed to create the manual-reset event to terminate the worker threads */
+        goto cleanup_and_fail;
+    }
+
+    /* zero everything out and assign memory */
+    ZeroMemory(init->PoolMemory, init->PoolMemorySize);
+    CORE__TaskInitMemoryArena(&arena, init->PoolMemory, init->PoolMemorySize);
+    task_pool = CORE__TaskMemoryArenaAllocateType (&arena, CORE__TASK_WORKER_POOL);
+    task_pool->TaskPoolStorage = init->TaskPoolStorage;
+    task_pool->ActiveThreads   = 0;
+    task_pool->WorkerCount     = init->WorkerCount;
+    task_pool->OSThreadIds     = CORE__TaskMemoryArenaAllocateArray(&arena, unsigned int, init->WorkerCount);
+    task_pool->OSThreadHandle  = CORE__TaskMemoryArenaAllocateArray(&arena, HANDLE      , init->WorkerCount);
+    task_pool->WorkerReady     = CORE__TaskMemoryArenaAllocateArray(&arena, HANDLE      , init->WorkerCount);
+    task_pool->WorkerError     = CORE__TaskMemoryArenaAllocateArray(&arena, HANDLE      , init->WorkerCount);
+    task_pool->TerminateSignal = term;
+    task_pool->ContextData     = init->PoolContext;
+    task_pool->PoolMemory      = init->PoolMemory;
+    task_pool->PoolMemorySize  = init->PoolMemorySize;
+
+    /* launch all of the threads */
+    for (i = 0, n = init->WorkerCount; i < n; ++i)
+    {
+        HANDLE                        whand = NULL;
+        HANDLE                       wready = NULL;
+        HANDLE                       werror = NULL;
+        unsigned int              thread_id = 0;
+        DWORD const            THREAD_READY = 0;
+        DWORD const            THREAD_ERROR = 1;
+        DWORD const              WAIT_COUNT = 2;
+        DWORD                       wait_rc = 0;
+        HANDLE                      wset[2];
+        CORE__TASK_WORKER_THREAD_INIT winit;
+
+        if ((wready = CreateEvent(NULL, TRUE, FALSE, NULL)) == NULL)
+        {
+            goto cleanup_and_fail;
+        }
+        if ((werror = CreateEvent(NULL, TRUE, FALSE, NULL)) == NULL)
+        {
+            CloseHandle(wready);
+            goto cleanup_and_fail;
+        }
+
+        /* spawn the worker thread with a small stack */
+        winit.WorkerPool      = task_pool;
+        winit.ThreadInit      = init->ThreadInitFunc;
+        winit.TaskPoolStorage = init->TaskPoolStorage;
+        winit.ReadySignal     = wready;
+        winit.ErrorSignal     = werror;
+        winit.TerminateSignal = term;
+        winit.PoolContext     = init->PoolContext;
+        if ((whand = (HANDLE) _beginthreadex(NULL, 64 * 1024, CORE__TaskWorkerThreadMain, &winit, 0, &thread_id)) == NULL)
+        {
+            CloseHandle(werror);
+            CloseHandle(wready);
+            goto cleanup_and_fail;
+        }
+        task_pool->OSThreadIds   [task_pool->ActiveThreads] = thread_id;
+        task_pool->OSThreadHandle[task_pool->ActiveThreads] = whand;
+        task_pool->WorkerReady   [task_pool->ActiveThreads] = wready;
+        task_pool->WorkerError   [task_pool->ActiveThreads] = werror;
+        task_pool->ActiveThreads++;
+        shutdown = 1;
+        
+        /* wait for the thread to become ready or fail to initialize */
+        wset[THREAD_READY] = wready;
+        wset[THREAD_ERROR] = werror;
+        if ((wait_rc = WaitForMultipleObjects(WAIT_COUNT, wset, FALSE, INFINITE)) != (WAIT_OBJECT_0+THREAD_READY))
+        {   /* either thread initialization failed, or the wait failed */
+            goto cleanup_and_fail;
+        }
+    }
+   *pool = task_pool;
+    return 0;
+
+cleanup_and_fail:
+    if (shutdown > 0)
+    {   /* all active threads are blocked waiting on the global steal queue semaphore */
+        SetEvent(term);
+        CORE__WakeTaskWorkerThreads(task_pool->TaskPoolStorage, task_pool->ActiveThreads);
+        WaitForMultipleObjects(task_pool->ActiveThreads, task_pool->OSThreadHandle, TRUE, INFINITE);
+        for (i = 0, n = task_pool->ActiveThreads; i < n; ++i)
+        {
+            CloseHandle(task_pool->WorkerError[i]);
+            CloseHandle(task_pool->WorkerReady[i]);
+            CloseHandle(task_pool->OSThreadHandle[i]);
+        }
+    }
+    if (term != NULL) CloseHandle(term);
+   *pool = NULL; 
+    return -1;
+}
+
+CORE_API(void)
+CORE_TerminateTaskWorkerPool
+(
+    struct _CORE_TASK_WORKER_POOL *pool
+)
+{
+    uint32_t i, n;
+
+    if (pool->ActiveThreads > 0)
+    {   /* indicate that all threads should terminate */
+        SetEvent(pool->TerminateSignal);
+        /* threads may be blocked waiting on the global steal queue semaphore, wake them */
+        CORE__WakeTaskWorkerThreads(pool->TaskPoolStorage, pool->ActiveThreads);
+        /* wait for all of the threads to terminate */
+        WaitForMultipleObjects(pool->ActiveThreads, pool->OSThreadHandle, TRUE, INFINITE);
+        /* close all of the per-thread handles */
+        for (i = 0, n = pool->ActiveThreads; i < n; ++i)
+        {
+            CloseHandle(pool->WorkerError[i]);
+            CloseHandle(pool->WorkerReady[i]);
+            CloseHandle(pool->OSThreadHandle[i]);
+        }
+        pool->ActiveThreads = 0;
+    }
+    if (pool->TerminateSignal != NULL)
+    {
+        CloseHandle(pool->TerminateSignal);
+        pool->TerminateSignal = NULL;
+    }
 }
 
 #endif /* CORE_TASK_IMPLEMENTATION */
