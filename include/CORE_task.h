@@ -32,22 +32,22 @@ struct _CV_MARKERSERIES;
 #define CORE_API(_rt)                     extern _rt
 #endif
 
+/* @summary Define the size of a single cacheline on the runtime target platform.
+ */
+#ifndef CORE_L1_CACHELINE_SIZE
+#define CORE_L1_CACHELINE_SIZE            64
+#endif
+
 /* @summary Define the size of a pointer, in bytes, on the target platform. Only 64-bit platforms are supported.
  */
 #ifndef CORE_TASK_POINTER_SIZE
 #define CORE_TASK_POINTER_SIZE            8
 #endif
 
-/* @summary Define the size of a single cacheline on the runtime target platform.
- */
-#ifndef CORE_TASK_L1_CACHELINE_SIZE
-#define CORE_TASK_L1_CACHELINE_SIZE       64
-#endif
-
 /* @summary Indicate that a type or field should be aligned to a cacheline boundary.
  */
 #ifndef CORE_TASK_CACHELINE_ALIGN
-#define CORE_TASK_CACHELINE_ALIGN         __declspec(align(CORE_TASK_L1_CACHELINE_SIZE))
+#define CORE_TASK_CACHELINE_ALIGN         __declspec(align(CORE_L1_CACHELINE_SIZE))
 #endif
 
 /* @summary Define various constants used to configure the task scheduler.
@@ -105,43 +105,43 @@ struct _CV_MARKERSERIES;
 #endif
 
 /* @summary Emit a Concurrency Visualizer event to the trace session.
- * @param env The CORE_TASK_ENVIRONMENT object owned by the calling thread.
+ * @param prof The _CORE_TASK_PROFILER object owned by the calling thread.
  * @param fmt The printf-style format string.
  * @param ... Substitution arguments for the format string.
  */
 #ifndef CORE_TaskProfilerEvent
 #ifdef  CORE_TASK_NO_PROFILER
-#define CORE_TaskProfilerEvent(env, fmt, ...)
+#define CORE_TaskProfilerEvent(prof, fmt, ...)
 #else
-#define CORE_TaskProfilerEvent(env, fmt, ...)                                  \
-    CvWriteAlertW((env)->Profiler->MarkerSeries, _T(fmt), __VA_ARGS__)
+#define CORE_TaskProfilerEvent(prof, fmt, ...)                                 \
+    CvWriteAlertW((prof)->MarkerSeries, _T(fmt), __VA_ARGS__)
 #endif
 #endif
 
 /* @summary Indicate the start of a labeled time period within the Concurrency Visualizer trace session. Note that spans cannot be nested within the same thread.
- * @param env The CORE_TASK_ENVIRONMENT object owned by the calling thread.
- * @param span The CORE_TASK_PROFILER_SPAN representing the interval being labeled.
+ * @param prof The _CORE_TASK_PROFILER object owned by the calling thread.
+ * @param span The _CORE_TASK_PROFILER_SPAN representing the interval being labeled.
  * @param fmt The printf-style format string.
  * @param ... Substitution arguments for the format string.
  */
 #ifndef CORE_TaskProfilerSpanEnter
 #ifdef  CORE_TASK_NO_PROFILER
-#define CORE_TaskProfilerSpanEnter(env, span, fmt, ...)
+#define CORE_TaskProfilerSpanEnter(prof, span, fmt, ...)
 #else
-#define CORE_TaskProfilerSpanEnter(env, span, fmt, ...)                        \
-    CvEnterSpanW((env)->Profiler->MarkerSeries, &(span).CvSpan, _T(fmt), __VA_ARGS__)
+#define CORE_TaskProfilerSpanEnter(prof, span, fmt, ...)                       \
+    CvEnterSpanW((prof)->MarkerSeries, &(span).CvSpan, _T(fmt), __VA_ARGS__)
 #endif
 #endif
 
 /* @summary Indicate the end of a labeled time period within the Concurrency Visualizer trace session.
- * @param env The CORE_TASK_ENVIRONMENT object owned by the calling thread.
- * @param span The CORE_TASK_PROFILER_SPAN representing the labeled interval.
+ * @param prof The _CORE_TASK_PROFILER object owned by the calling thread.
+ * @param span The _CORE_TASK_PROFILER_SPAN representing the labeled interval.
  */
 #ifndef CORE_TaskProfilerSpanLeave
 #ifdef  CORE_TASK_NO_PROFILER
-#define CORE_TaskProfilerSpanLeave(env, span)
+#define CORE_TaskProfilerSpanLeave(prof, span)
 #else
-#define CORE_TaskProfilerSpanLeave(env, span)                                  \
+#define CORE_TaskProfilerSpanLeave(prof, span)                                 \
     CvLeaveSpan((span).CvSpan)
 #endif
 #endif
@@ -646,6 +646,16 @@ CORE_QueryTaskWorkerPoolMemorySize
     uint32_t worker_count
 );
 
+/* @summary Retrieve the application-defined data associated with a task worker thread pool.
+ * @param pool The task worker thread pool to query.
+ * @return The application-defined data associated with the task worker thread pool.
+ */
+CORE_API(uintptr_t)
+CORE_QueryTaskWorkerPoolContext
+(
+    struct _CORE_TASK_WORKER_POOL *pool
+);
+
 /* @summary Initialize and launch a pool of worker threads to execute tasks.
  * @param pool On return, this location is updated with a pointer to the thread pool object.
  * @param init Data used to configure the pool of worker threads.
@@ -678,37 +688,37 @@ CORE_TerminateTaskWorkerPool
 /* @summary Define the amount of padding, in bytes, used for a CORE__TASK_SEMAPHORE object.
  */
 #ifndef CORE__TASK_SEMAPHORE_PADDING_SIZE
-#define CORE__TASK_SEMAPHORE_PADDING_SIZE            (CORE_TASK_L1_CACHELINE_SIZE-sizeof(int32_t)-sizeof(HANDLE))
+#define CORE__TASK_SEMAPHORE_PADDING_SIZE            (CORE_L1_CACHELINE_SIZE-sizeof(int32_t)-sizeof(HANDLE))
 #endif
 
 /* @summary Define the amount of padding, in bytes, separating the enqueue or dequeue index from adjacent data in a bounded MPMC queue.
  */
 #ifndef CORE__TASK_MPMC_QUEUE_PADDING_SIZE_INDEX
-#define CORE__TASK_MPMC_QUEUE_PADDING_SIZE_INDEX     (CORE_TASK_L1_CACHELINE_SIZE-sizeof(uint32_t))
+#define CORE__TASK_MPMC_QUEUE_PADDING_SIZE_INDEX     (CORE_L1_CACHELINE_SIZE-sizeof(uint32_t))
 #endif
 
 /* @summary Define the amount of padding, in bytes, separating the shared data from adjacent data in a bounded MPMC queue.
  */
 #ifndef CORE__TASK_MPMC_QUEUE_PADDING_SIZE_SHARED
-#define CORE__TASK_MPMC_QUEUE_PADDING_SIZE_SHARED    (CORE_TASK_L1_CACHELINE_SIZE-sizeof(void*)-sizeof(uint32_t)-sizeof(uint32_t)-sizeof(void*)-sizeof(size_t))
+#define CORE__TASK_MPMC_QUEUE_PADDING_SIZE_SHARED    (CORE_L1_CACHELINE_SIZE-sizeof(void*)-sizeof(uint32_t)-sizeof(uint32_t)-sizeof(void*)-sizeof(size_t))
 #endif
 
 /* @summary Define the amount of padding, in bytes, separating the enqueue or dequeue index from adjacent data in an bounded SPMC queue.
  */
 #ifndef CORE__TASK_SPMC_QUEUE_PADDING_SIZE_INDEX
-#define CORE__TASK_SPMC_QUEUE_PADDING_SIZE_INDEX     (CORE_TASK_L1_CACHELINE_SIZE-sizeof(int64_t))
+#define CORE__TASK_SPMC_QUEUE_PADDING_SIZE_INDEX     (CORE_L1_CACHELINE_SIZE-sizeof(int64_t))
 #endif
 
 /* @summary Define the amount of padding, in bytes, separating the shared data from adjacent data in an bounded SPMC queue.
  */
 #ifndef CORE__TASK_SPMC_QUEUE_PADDING_SIZE_SHARED
-#define CORE__TASK_SPMC_QUEUE_PADDING_SIZE_SHARED    (CORE_TASK_L1_CACHELINE_SIZE-sizeof(void*)-sizeof(uint32_t)-sizeof(uint32_t)-sizeof(void*)-sizeof(size_t))
+#define CORE__TASK_SPMC_QUEUE_PADDING_SIZE_SHARED    (CORE_L1_CACHELINE_SIZE-sizeof(void*)-sizeof(uint32_t)-sizeof(uint32_t)-sizeof(void*)-sizeof(size_t))
 #endif
 
 /* @summary Define the amount of padding, in bytes, separating the PRNG state from adjacent data.
  */
 #ifndef CORE__TASK_PRNG_PADDING_SIZE
-#define CORE__TASK_PRNG_PADDING_SIZE                 (CORE_TASK_L1_CACHELINE_SIZE-sizeof(uint32_t))
+#define CORE__TASK_PRNG_PADDING_SIZE                 (CORE_L1_CACHELINE_SIZE-sizeof(uint32_t))
 #endif
 
 /* @summary Define the size of the pseudo-random number generator state in bytes.
@@ -3162,6 +3172,15 @@ CORE_QueryTaskWorkerPoolMemorySize
     required_size += CORE__TaskAllocationSizeArray(HANDLE      , worker_count);  /* WorkerReady    */
     required_size += CORE__TaskAllocationSizeArray(HANDLE      , worker_count);  /* WorkerError    */
     return required_size;
+}
+
+CORE_API(uintptr_t)
+CORE_QueryTaskWorkerPoolContext
+(
+    struct _CORE_TASK_WORKER_POOL *pool
+)
+{
+    return pool->ContextData;
 }
 
 CORE_API(int)
