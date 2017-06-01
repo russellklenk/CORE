@@ -1200,9 +1200,9 @@ main
         ConsoleOutput("Prefer Intel OpenCL: %d\n", cpu_info.PreferIntel);
         ConsoleOutput("Is virtual machine : %d\n", cpu_info.IsVirtualMachine);
         ConsoleOutput("CPU vendor string  : %S\n", cpu_info.VendorName);
-        if (cpu_info.CacheLineSizeL1 > CORE_TASK_L1_CACHELINE_SIZE)
+        if (cpu_info.CacheLineSizeL1 > CORE_L1_CACHELINE_SIZE)
         {
-            ConsoleOutput("WARNING: For best performance, recompiled with /DCORE_TASK_L1_CACHELINE_SIZE=%u\n", cpu_info.CacheLineSizeL1);
+            ConsoleOutput("WARNING: For best performance, recompiled with /DCORE_L1_CACHELINE_SIZE=%u\n", cpu_info.CacheLineSizeL1);
         }
         ConsoleOutput("\n");
     }
