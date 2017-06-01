@@ -2547,8 +2547,8 @@ CORE_CreateTaskPoolStorage
     }
 
     /* zero-initialize the entire memory block and allocate the base structure */
-    ZeroMemory(init->MemoryStart, init->MemorySize);
-    CORE__TaskInitMemoryArena(&arena, init->MemoryStart, init->MemorySize);
+    ZeroMemory(init->MemoryStart, (size_t) init->MemorySize);
+    CORE__TaskInitMemoryArena(&arena, init->MemoryStart, (size_t) init->MemorySize);
     stor       = CORE__TaskMemoryArenaAllocateType (&arena, CORE__TASK_POOL_STORAGE);
     steal_size = CORE__QueryTaskMPMCQueueMemorySize(CORE__TASK_STEAL_QUEUE_CAPACITY);
     steal_mem  = CORE__TaskMemoryArenaAllocateHost (&arena, steal_size, CORE_AlignOf(uint32_t));
@@ -3234,8 +3234,8 @@ CORE_LaunchTaskWorkerPool
     }
 
     /* zero everything out and assign memory */
-    ZeroMemory(init->PoolMemory, init->PoolMemorySize);
-    CORE__TaskInitMemoryArena(&arena, init->PoolMemory, init->PoolMemorySize);
+    ZeroMemory(init->PoolMemory, (size_t) init->PoolMemorySize);
+    CORE__TaskInitMemoryArena(&arena, init->PoolMemory, (size_t) init->PoolMemorySize);
     task_pool = CORE__TaskMemoryArenaAllocateType (&arena, CORE__TASK_WORKER_POOL);
     task_pool->TaskPoolStorage = init->TaskPoolStorage;
     task_pool->ActiveThreads   = 0;
