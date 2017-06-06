@@ -37,13 +37,13 @@
 /* @summary Define the maximum number of keys that can be reported as down, pressed or released in a single update.
  */
 #ifndef CORE_INPUT_MAX_KEYS
-#define CORE_INPUT_MAX_KEYS               8
+#define CORE_INPUT_MAX_KEYS               256
 #endif
 
 /* @summary Define the maximum number of buttons that can be reported as down, pressed or released in a single update.
  */
 #ifndef CORE_INPUT_MAX_BUTTONS
-#define CORE_INPUT_MAX_BUTTONS            8
+#define CORE_INPUT_MAX_BUTTONS            32 
 #endif
 
 /* @summary Define a bitvector used to poll all possible gamepad ports (all bits set.)
@@ -194,6 +194,34 @@ typedef struct _CORE_INPUT_SYSTEM_INIT {
 extern "C" {
 #endif /* __cplusplus */
 
+/* @summary Given a RawInput keyboard packet, retrieve the virtual key code and scan code values.
+ * @param vkey_code On return, stores the virtual key code identifier (VK_x). This value is always less than or equal to 255.
+ * @param scan_code On return, stores the scan code value, suitable for passing to CORE_InputCopyKeyDisplayName.
+ * @param key The RawInput keyboard packet to process.
+ * @return Non-zero if the virtual key code and scan code were extracted, or zero if the packet was part of an escape sequence.
+ */
+CORE_API(int)
+CORE_InputGetVirtualKeyAndScanCode
+(
+    uint32_t    *vkey_code, 
+    uint32_t    *scan_code,
+    RAWKEYBOARD const *key 
+);
+
+/* @summary Retrieve a localized string suitable for use as a display name for a given virtual key code.
+ * @param buffer The caller-managed buffer to receive the string.
+ * @param buffer_max_chars The maximum number of characters that can be written to the buffer, including the terminating nul.
+ * @param vkey_code The virtual key code (VK_x) for the key whose name should be retrieved.
+ * @return The number of characters written to the buffer, not including the terminating nul.
+ */
+CORE_API(size_t)
+CORE_InputCopyKeyDisplayName
+(
+    WCHAR           *buffer, 
+    size_t buffer_max_chars, 
+    uint32_t      vkey_code
+);
+
 CORE_API(size_t)
 CORE_QueryInputSystemMemorySize
 (
@@ -328,6 +356,47 @@ CORE_ConsumeInputEvents
     _disp->_func_name == CORE__##_func_name##_Stub
 #endif
 
+/* @summary Retrieve a pointer to the start of a device state record in a device list.
+ * @param _list The CORE__INPUT_DEVICE_LIST to query.
+ * @param _index The zero-based index of the device whose state will be returned.
+ * @param _state_size The size of the device state record, in bytes.
+ * @return A pointer to the start of the device state record for the specified device identified by index.
+ */
+#ifndef CORE__InputDeviceListState
+#define CORE__InputDeviceListState(_list, _index , _state_size)                \
+    (((uint8_t*)(_list)->DeviceState) + ((_index)*(_state_size)))
+#endif
+
+/* @summary Retrieve a the device state record for a gamepad device identified by index.
+ * @param _list The CORE__INPUT_DEVICE_LIST to query.
+ * @param _index The zero-based index of the gamepad device whose state will be retrieved.
+ * @return The CORE__INPUT_GAMEPAD_STATE for the specified gamepad.
+ */
+#ifndef CORE__GamepadDeviceListState
+#define CORE__GamepadDeviceListState(_list, _index)                            \
+    (CORE__INPUT_GAMEPAD_STATE*) CORE__InputDeviceListState((_list), (_index), sizeof(CORE__INPUT_GAMEPAD_STATE))
+#endif
+
+/* @summary Retrieve a the device state record for a pointer device identified by index.
+ * @param _list The CORE__INPUT_DEVICE_LIST to query.
+ * @param _index The zero-based index of the pointer device whose state will be retrieved.
+ * @return The CORE__INPUT_POINTER_STATE for the specified pointer.
+ */
+#ifndef CORE__PointerDeviceListState
+#define CORE__PointerDeviceListState(_list, _index)                            \
+    (CORE__INPUT_POINTER_STATE*) CORE__InputDeviceListState((_list), (_index), sizeof(CORE__INPUT_POINTER_STATE))
+#endif
+
+/* @summary Retrieve a the device state record for a keyboard device identified by index.
+ * @param _list The CORE__INPUT_DEVICE_LIST to query.
+ * @param _index The zero-based index of the keyboard device whose state will be retrieved.
+ * @return The CORE__INPUT_KEYBOARD_STATE for the specified keyboard.
+ */
+#ifndef CORE__KeyboardDeviceListState
+#define CORE__KeyboardDeviceListState(_list, _index)                           \
+    (CORE__INPUT_KEYBOARD_STATE*)CORE__InputDeviceListState((_list), (_index), sizeof(CORE__INPUT_KEYBOARD_STATE))
+#endif
+
 /* @summary Define the data associated with an internal memory arena allocator.
  */
 typedef struct _CORE__INPUT_ARENA {
@@ -346,6 +415,19 @@ typedef struct _CORE__INPUT_GAMEPAD_STATE {
     float                         RStick[4];              /* The right analog stick X, Y, magnitude and normalized magnitude. */
 } CORE__INPUT_GAMEPAD_STATE;
 
+/* @summary Statically-initialize a _CORE__INPUT_GAMEPAD_STATE structure.
+ */
+#ifndef CORE__INPUT_GAMEPAD_STATE_STATIC_INIT
+#define CORE__INPUT_GAMEPAD_STATE_STATIC_INIT                                  \
+    {                                                                          \
+          0,            /* LTrigger */                                         \
+          0,            /* RTrigger */                                         \
+          0,            /* Buttons */                                          \
+        { 0, 0, 0, 0 }, /* LStick[X,Y,M,N] */                                  \
+        { 0, 0, 0, 0 }  /* RStick[X,Y,M,N] */                                  \
+    }
+#endif
+
 /* @summary Define the state data associated with a single RawInput pointer device.
  */
 typedef struct _CORE__INPUT_POINTER_STATE {
@@ -355,11 +437,32 @@ typedef struct _CORE__INPUT_POINTER_STATE {
     uint32_t                      Flags;                  /* Bitflags indicating that postprocessing needs to be performed. */
 } CORE__INPUT_POINTER_STATE;
 
+/* @summary Statically-initialize a _CORE__INPUT_POINTER_STATE structure.
+ */
+#ifndef CORE__INPUT_POINTER_STATE_STATIC_INIT
+#define CORE__INPUT_POINTER_STATE_STATIC_INIT                                  \
+    {                                                                          \
+        { 0, 0    }, /* Pointer[X,Y] */                                        \
+        { 0, 0, 0 }, /* Relative[X,Y,Z] */                                     \
+          0,         /* Buttons */                                             \
+          0          /* Flags */                                               \
+    }
+#endif
+
 /* @summary Define the state data associated with a single RawInput keyboard device.
  */
 typedef struct _CORE__INPUT_KEYBOARD_STATE {
     uint32_t                      KeyState[8];            /* A bitvector (256 bits) mapping scan code to key state, where a set bit indicates that the key is down. */
 } CORE__INPUT_KEYBOARD_STATE;
+
+/* @summary Statically-initialize a _CORE__INPUT_KEYBOARD_STATE structure.
+ */
+#ifndef CORE__INPUT_KEYBOARD_STATE_STATIC_INIT
+#define CORE__INPUT_KEYBOARD_STATE_STATIC_INIT                                 \
+    {                                                                          \
+        { 0, 0, 0, 0, 0, 0, 0, 0 } /* KeyState */                              \
+    }
+#endif
 
 /* @summary Define the data associated with a list of input devices of a particular type.
  */
@@ -414,6 +517,11 @@ typedef enum _CORE__INPUT_DEVICE_SET_MEMBERSHIP {
     CORE__INPUT_DEVICE_SET_MEMBERSHIP_PREV = (1UL << 0),  /* The device is present in the previous device list. */
     CORE__INPUT_DEVICE_SET_MEMBERSHIP_CURR = (1UL << 1),  /* The device is present in the current device list. */
 } CORE__INPUT_DEVICE_SET_MEMBERSHIP;
+
+typedef enum _CORE__INPUT_POINTER_FLAGS {
+    CORE__INPUT_POINTER_FLAGS_NONE         = (0UL << 0),  /* No post-processing is required. */
+    CORE__INPUT_POINTER_FLAG_ABSOLUTE      = (1UL << 0),  /* The device only specifies absolute positioning. */
+} CORE__INPUT_POINTER_FLAGS;
 
 /* @summary Initialize a memory arena allocator around an externally-managed memory block.
  * @param arena The memory arena allocator to initialize.
@@ -639,7 +747,7 @@ CORE__LoadXInput
     CORE__InputResolveRuntimeFunction(disp, xinput, XInputGetAudioDeviceIds);
    *missing_entry_points = 0;
     
-   /* determine whether any API entry points could not be resolved */
+    /* determine whether any API entry points could not be resolved */
     if (CORE__InputIsRuntimeFunctionMissing(disp, XInputEnable               )) *missing_entry_points = 1;
     if (CORE__InputIsRuntimeFunctionMissing(disp, XInputGetState             )) *missing_entry_points = 1;
     if (CORE__InputIsRuntimeFunctionMissing(disp, XInputSetState             )) *missing_entry_points = 1;
@@ -650,6 +758,11 @@ CORE__LoadXInput
     return 0;
 }
 
+/* @summary Search a CORE__INPUT_DEVICE_LIST for a device identified by operating system handle.
+ * @param device_list The device list to search.
+ * @param device_handle The operating system identifier of the device to locate.
+ * @return The zero-based index of the device in the list, or CORE_INPUT_DEVICE_NOT_FOUND.
+ */
 static uint32_t
 CORE__FindInputDeviceForHandle
 (
@@ -667,26 +780,13 @@ CORE__FindInputDeviceForHandle
     return CORE_INPUT_DEVICE_NOT_FOUND;
 }
 
-#ifndef CORE__InputDeviceListState
-#define CORE__InputDeviceListState(_list, _index , _state_size)                \
-    (((uint8_t*)(_list)->DeviceState) + ((_index)*(_state_size)))
-#endif
-
-#ifndef CORE__GamepadDeviceListState
-#define CORE__GamepadDeviceListState(_list, _index)                            \
-    (CORE__INPUT_GAMEPAD_STATE*) CORE__InputDeviceListState((_list), (_index), sizeof(CORE__INPUT_GAMEPAD_STATE))
-#endif
-
-#ifndef CORE__PointerDeviceListState
-#define CORE__PointerDeviceListState(_list, _index)                            \
-    (CORE__INPUT_POINTER_STATE*) CORE__InputDeviceListState((_list), (_index), sizeof(CORE__INPUT_POINTER_STATE))
-#endif
-
-#ifndef CORE__KeyboardDeviceListState
-#define CORE__KeyboardDeviceListState(_list, _index)                           \
-    (CORE__INPUT_KEYBOARD_STATE*)CORE__InputDeviceListState((_list), (_index), sizeof(CORE__INPUT_KEYBOARD_STATE))
-#endif
-
+/* @summary Handle an input device being attached to the system. If the device was not previously known, add it to a device list.
+ * @param device_list The CORE__INPUT_DEVICE_LIST to query and potentially update.
+ * @param device_handle The operating system identifier of the device that was attached.
+ * @param default_state A pointer to a CORE__INPUT_GAMEPAD_STATE, CORE__INPUT_POINTER_STATE or CORE__INPUT_KEYBOARD_STATE initialized with the default device state.
+ * @param state_size The size of the structure pointed to by default_state, in bytes.
+ * @return The zero-based index of the device within the device list, or CORE_INPUT_DEVICE_TOO_MANY if too many devices of the specified type are attached.
+ */
 static uint32_t
 CORE__HandleInputDeviceAttach
 (
@@ -716,16 +816,653 @@ CORE__HandleInputDeviceAttach
     return i;
 }
 
-#if 0
+/* @summary Handle an input device being removed from the system. If the device is known, it is removed from the device list.
+ * @param device_list The CORE__INPUT_DEVICE_LIST to query and potentially update.
+ * @param device_handle The operating system identifier of the device that was removed.
+ * @param state_size The size of the state data structure for the device type, in bytes.
+ * @return Zero if the input device was found and removed, or -1 if the device was not found.
+ */
 static int
 CORE__HandleInputDeviceRemove
 (
     CORE__INPUT_DEVICE_LIST *device_list, 
-    HANDLE                 device_handle
+    HANDLE                 device_handle, 
+    size_t                    state_size
 )
 {
+    if (device_list->DeviceCount > 0)
+    {   /* search for the device in the device list */
+        uint32_t last_index = device_list->DeviceCount - 1;
+        uint32_t item_index = CORE__FindInputDeviceForHandle(device_list, device_handle);
+        if (item_index != CORE_INPUT_DEVICE_NOT_FOUND)
+        {   /* the device was found in the device list */
+            if (item_index != last_index)
+            {   /* swap the last item into place */
+                CopyMemory(
+                    CORE__InputDeviceListState(device_list, item_index, state_size), 
+                    CORE__InputDeviceListState(device_list, last_index, state_size), 
+                    state_size);
+                device_list->DeviceHandle[item_index] = device_list->DeviceHandle[last_index];
+            }
+            device_list->DeviceCount--;
+            return  0;
+        }
+        else
+        {   /* the device was not present in the device list */
+            return -1;
+        }
+    }
+    else
+    {   /* the device list was empty */
+        return -1;
+    }
 }
-#endif
+
+/* @summary Given two snapshots of attached input devices, populate a CORE__INPUT_DEVICE_SET indicating whether a given device is in none, one or both lists.
+ * @param set The device set to populate. 
+ * @param prev The device list from the previous state snapshot.
+ * @param curr The device list from the current state snapshot.
+ */
+static void
+CORE__DetermineInputDeviceSet
+(
+    CORE__INPUT_DEVICE_SET   *set, 
+    CORE__INPUT_DEVICE_LIST *prev, 
+    CORE__INPUT_DEVICE_LIST *curr
+)
+{
+    uint32_t num_prev = prev->DeviceCount;
+    uint32_t num_curr = curr->DeviceCount;
+    uint32_t i, j, m, n;
+
+    /* initialize the state of the device set based on the previous snapshot */
+    for (i = 0, n = set->MaxDevices; i < n; ++i)
+    {
+        if (i < num_prev)
+        {   /* initialize the state data with the contents of the previous device list */
+            set->DeviceIds [i] = prev->DeviceHandle[i];
+            set->Membership[i] = CORE__INPUT_DEVICE_SET_MEMBERSHIP_PREV;
+            set->PrevIndex [i] =(uint8_t) i;
+            set->CurrIndex [i] =(uint8_t) 0xFF;
+            set->DeviceCount++;
+        }
+        else
+        {   /* initialize the state data to the default value */
+            set->DeviceIds [i] = CORE_INPUT_DEVICE_HANDLE_NONE;
+            set->Membership[i] = CORE__INPUT_DEVICE_SET_MEMBERSHIP_NONE;
+            set->PrevIndex [i] =(uint8_t) 0xFF;
+            set->CurrIndex [i] =(uint8_t) 0xFF;
+        }
+    }
+    /* update the state of the device set based on the current snapshot */
+    for (i = 0; i < num_curr; ++i)
+    {   /* the set may not be empty, so filter out duplicate devices */
+        HANDLE   id = curr->DeviceHandle[i];
+        uint32_t ix = set->DeviceCount;
+        uint32_t in = 1;
+        for (j = 0; j < ix; ++j)
+        {
+            if (set->DeviceIds[j] == id)
+            {   /* found an existing entry with the same handle */
+                ix = j; /* update the existing entry */
+                in = 0; /* don't increment the device count */
+                break;
+            }
+        }
+        set->DeviceIds [ix]  = id;
+        set->Membership[ix] |= CORE__INPUT_DEVICE_SET_MEMBERSHIP_CURR;
+        set->CurrIndex [ix]  =(uint8_t) i;
+        set->DeviceCount    += in;
+    }
+}
+
+/* @summary Apply scaled radial deadzone logic to an analog stick input.
+ * @param stick_xymn A four-element array that will store the normalized x- and y-components of the input direction, the magnitude, and the normalized magnitude.
+ * @param stick_x The x-axis component of the analog input.
+ * @param stick_y The y-axis component of the analog input.
+ * @param deadzone The deadzone size as a percentage of total input range (in [0, 1]).
+ */
+static void
+CORE__ApplyInputScaledRadialDeadzone
+(
+    float  *stick_xymn,
+    int16_t    stick_x, 
+    int16_t    stick_y, 
+    float     deadzone
+)
+{
+    float  x = stick_x;
+    float  y = stick_y;
+    float  m =(float) sqrt(x * x + y * y);
+    float nx = x / m;
+    float ny = y / m;
+    float  n;
+
+    if (m < deadzone)
+    {   // drop the input; it falls within the deadzone.
+        stick_xymn[0] = 0;
+        stick_xymn[1] = 0;
+        stick_xymn[2] = 0;
+        stick_xymn[3] = 0;
+    }
+    else
+    {   // rescale the input into the non-dead space.
+        n = (m - deadzone) / (1.0f - deadzone);
+        stick_xymn[0] = nx * n;
+        stick_xymn[1] = ny * n;
+        stick_xymn[2] = m;
+        stick_xymn[3] = n;
+    }
+}
+
+/* @summary Process an XInput gamepad state packet to update the state of a gamepad device.
+ * @param device_list The CORE__INPUT_DEVICE_LIST to query and update.
+ * @param port_index The zero-based index of the port to which the gamepad is attached.
+ * @param input_packet The XInput gamepad state snapshot.
+ * @return The zero-based index of the device in the device list, or CORE_INPUT_DEVICE_TOO_MANY if the device was not previously seen and is not already present in the device list.
+ */
+static uint32_t
+CORE__ProcessGamepadInputPacket
+(
+    CORE__INPUT_DEVICE_LIST *device_list, 
+    DWORD                     port_index, 
+    XINPUT_STATE const     *input_packet
+)
+{
+    CORE__INPUT_GAMEPAD_STATE   *state = NULL;
+    XINPUT_GAMEPAD const      *gamepad =&input_packet->Gamepad;
+    uintptr_t                 port_ptr =(uintptr_t) port_index;
+    HANDLE                      device =(HANDLE   ) port_ptr;
+    uint32_t                     index = 0;
+    float                   deadzone_l = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE  / 32767.0f;
+    float                   deadzone_r = XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE / 32767.0f;
+
+    if((index = CORE__FindInputDeviceForHandle(device_list, device)) != CORE_INPUT_DEVICE_NOT_FOUND)
+    {   /* this is an already-known device */
+        state = CORE__GamepadDeviceListState(device_list, index);
+    }
+    else
+    {   /* this is a newly-seen device - attach it */
+        if (device_list->DeviceCount == device_list->MaxDevices)
+        {   /* there are too many devices of the specified type attached */
+            return CORE_INPUT_DEVICE_TOO_MANY;
+        }
+        index = device_list->DeviceCount;
+        state = CORE__GamepadDeviceListState(device_list, index);
+        ZeroMemory(state, sizeof(CORE__INPUT_GAMEPAD_STATE));
+        device_list->DeviceHandle[i] = device;
+        device_list->DeviceCount++;
+    }
+
+    /* update the input device state and apply deadzone logic */
+    state->LTrigger = gamepad->bLeftTrigger  > XINPUT_GAMEPAD_TRIGGER_THRESHOLD ? gamepad->bLeftTrigger  : 0;
+    state->RTrigger = gamepad->bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD ? gamepad->bRightTrigger : 0;
+    state->Buttons  = gamepad->wButtons;
+    CORE__ApplyInputScaledRadialDeadzone(state->LStick, gamepad->sThumbLX, gamepad->sThumbLY, deadzone_l);
+    CORE__ApplyInputScaledRadialDeadzone(state->RStick, gamepad->sThumbRX, gamepad->sThumbRY, deadzone_r);
+    return index;
+}
+
+/* @summary Process a RawInput mouse packet to update the state of a pointer device.
+ * @param device_list The CORE__INPUT_DEVICE_LIST to query and update.
+ * @param input_packet The RawInput mouse packet.
+ * @return The zero-based index of the device in the device list, or CORE_INPUT_DEVICE_TOO_MANY if the device was not previously seen and is not already present in the device list.
+ */
+static uint32_t
+CORE__ProcessMouseInputPacket
+(
+    CORE__INPUT_DEVICE_LIST *device_list, 
+    RAWINPUT const         *input_packet
+)
+{
+    RAWINPUTHEADER       const *header = &input_packet->header;
+    RAWMOUSE             const  *mouse = &input_packet->data.mouse;
+    CORE__INPUT_POINTER_STATE   *state = NULL;
+    uint32_t                     index = 0;
+    POINT                       cursor;
+    USHORT                button_flags;
+
+    if((index = CORE__FindInputDeviceForHandle(device_list, header->hDevice)) != CORE_INPUT_DEVICE_NOT_FOUND)
+    {   /* this is an already-known device */
+        state = CORE__PointerDeviceListState(device_list, index);
+    }
+    else
+    {   /* this is a newly-seen device - attach it */
+        if (device_list->DeviceCount == device_list->MaxDevices)
+        {   /* there are too many devices of the specified type attached */
+            return CORE_INPUT_DEVICE_TOO_MANY;
+        }
+        index = device_list->DeviceCount;
+        state = CORE__PointerDeviceListState(device_list, index);
+        ZeroMemory(state, sizeof(CORE__INPUT_POINTER_STATE));
+        device_list->DeviceHandle[i] = header->hDevice;
+        device_list->DeviceCount++;
+    }
+
+    /* retrieve the current mouse cursor position, in pixels */
+    GetCursorPos(&cursor);
+    state->Pointer[0] = cursor.x;
+    state->Pointer[1] = cursor.y;
+
+    /* set the high-resolution device position values */
+    if (mouse->usFlags & MOUSE_MOVE_ABSOLUTE)
+    {   /* the device is a pen, touchscreen, etc. and specifies only absolute coordinates */
+        state->Relative[0]  = mouse->lLastX;
+        state->Relative[1]  = mouse->lLastY;
+        state->Flags        = CORE__INPUT_POINTER_FLAG_ABSOLUTE;
+    }
+    else
+    {   /* the device has specified relative coordinates */
+        state->Relative[0] += mouse->lLastX;
+        state->Relative[1] += mouse->lLastY;
+        state->Flags        = CORE__INPUT_POINTER_FLAGS_NONE;
+    }
+
+    button_flags = mouse->usButtonFlags;
+    if (button_flags & RI_MOUSE_WHEEL)
+    {   /* mouse wheel data was supplied with the input packet */
+        state->Relative[2] = (int16_t) mouse->usButtonData;
+    }
+    else
+    {   /* no mouse wheel data was supplied */
+        state->Relative[2] = (int16_t) 0;
+    }
+    /* rebuild the button state vector. Raw Input supports up to 5 buttons. */
+    if (button_flags & RI_MOUSE_BUTTON_1_DOWN) state->Buttons |=  MK_LBUTTON;
+    if (button_flags & RI_MOUSE_BUTTON_1_UP  ) state->Buttons &= ~MK_LBUTTON;
+    if (button_flags & RI_MOUSE_BUTTON_2_DOWN) state->Buttons |=  MK_RBUTTON;
+    if (button_flags & RI_MOUSE_BUTTON_2_UP  ) state->Buttons &= ~MK_RBUTTON;
+    if (button_flags & RI_MOUSE_BUTTON_3_DOWN) state->Buttons |=  MK_MBUTTON;
+    if (button_flags & RI_MOUSE_BUTTON_3_UP  ) state->Buttons &= ~MK_MBUTTON;
+    if (button_flags & RI_MOUSE_BUTTON_4_DOWN) state->Buttons |=  MK_XBUTTON1;
+    if (button_flags & RI_MOUSE_BUTTON_4_UP  ) state->Buttons &= ~MK_XBUTTON1;
+    if (button_flags & RI_MOUSE_BUTTON_5_DOWN) state->Buttons |=  MK_XBUTTON2;
+    if (button_flags & RI_MOUSE_BUTTON_5_UP  ) state->Buttons &= ~MK_XBUTTON2;
+    return index;
+}
+
+/* @summary Process a RawInput keyboard packet to update the state of a keyboard device.
+ * @param device_list The CORE__INPUT_DEVICE_LIST to query and update.
+ * @param input_packet The RawInput keyboard packet.
+ * @return The zero-based index of the device in the device list, or CORE_INPUT_DEVICE_TOO_MANY if the device was not previously seen and is not already present in the device list.
+ */
+static uint32_t
+CORE__ProcessKeyboardInputPacket
+(
+    CORE__INPUT_DEVICE_LIST *device_list, 
+    RAWINPUT const         *input_packet
+)
+{
+    RAWINPUTHEADER       const *header = &input_packet->header;
+    RAWKEYBOARD          const    *key = &input_packet->data.keyboard;
+    CORE__INPUT_KEYBOARD_STATE  *state = NULL;
+    uint32_t                     index = 0;
+    uint32_t                 vkey_code = 0;
+    uint32_t                 scan_code = 0;
+
+    if((index = CORE__FindInputDeviceForHandle(device_list, header->hDevice)) != CORE_INPUT_DEVICE_NOT_FOUND)
+    {   /* this is an already-known device */
+        state = CORE__KeyboardDeviceListState(device_list, index);
+    }
+    else
+    {   /* this is a newly-seen device - attach it */
+        if (device_list->DeviceCount == device_list->MaxDevices)
+        {   /* there are too many devices of the specified type attached */
+            return CORE_INPUT_DEVICE_TOO_MANY;
+        }
+        index = device_list->DeviceCount;
+        state = CORE__KeyboardDeviceListState(device_list, index);
+        ZeroMemory(state, sizeof(CORE__INPUT_KEYBOARD_STATE));
+        device_list->DeviceHandle[i] = header->hDevice;
+        device_list->DeviceCount++;
+    }
+    if (!CORE_InputGetVirtualKeyAndScanCode(&vkey_code, &scan_code, key))
+    {   /* discard fake keys; these are just part of an escaped sequence */
+        return index;
+    }
+    if ((key->Flags & RI_KEY_BREAK) == 0)
+    {   /* the key is currently pressed; set the bit corresponding to the virtual key code */
+        state->KeyState[vkey_code >> 5] |= (1UL << (vkey_code & 0x1F));
+    }
+    else
+    {   /* the key was just released; clear the bit corresponding to the virtual key code */
+        state->KeyState[vkey_code >> 5] &=~(1UL << (vkey_code & 0x1F));
+    }
+    return index;
+}
+
+/* @summary Poll all XInput gamepads currently attached to the system and update the input device state.
+ * @param device_list The CORE__INPUT_DEVICE_LIST to query and possibly update.
+ * @param ports_out On return, this value has one bit set for each attached gamepad.
+ * @param ports_inp A bitvector specifying the gamepad ports to poll, or CORE_INPUT_ALL_GAMEPAD_PORTS to poll all ports.
+ * @param disp The XInput dispatch table.
+ * @return The number of gamepad devices attached to the system.
+ */
+static uint32_t
+CORE__PollXInputGamepads
+(
+    CORE__INPUT_DEVICE_LIST *device_list,
+    uint32_t                  *ports_out,
+    uint32_t                   ports_inp, 
+    CORE__INPUT_XINPUT_DISPATCH    *disp 
+)
+{
+    XINPUT_STATE state;
+    DWORD       result = ERROR_SUCCESS;
+    uint32_t   outbits = 0;
+    uint32_t     count = 0;
+    uint32_t         i;
+    for (i = 0; i < XUSER_MAX_COUNT; ++i)
+    {
+        if (ports_inp & (1UL << i))
+        {
+            if ((result  = disp->XInputGetState(i, &state)) == ERROR_SUCCESS)
+            {
+                CORE__ProcessGamepadInputPacket(device_list, i, &state);
+                outbits |= (1UL << i);
+                count++;
+            }
+        }
+    }
+   *ports_out = outbits;
+    return count;
+}
+
+/* @summary Given two gamepad state snapshots, generate events for buttons down, pressed and released.
+ * @param events The gamepad events structure to populate.
+ * @param prev The state snapshot for the device from the previous update.
+ * @param curr The state snapshot for the device from the in-progress update.
+ */
+static void
+CORE__GenerateGamepadInputEvents
+(
+    CORE_INPUT_GAMEPAD_EVENTS     *events, 
+    CORE__INPUT_GAMEPAD_STATE const *prev, 
+    CORE__INPUT_GAMEPAD_STATE const *curr
+)
+{
+    uint32_t   max_events = events->MaxButtonEvents;
+    uint32_t   curr_state = curr->Buttons;
+    uint32_t   prev_state = prev->Buttons;
+    uint32_t      changes =(curr_state ^ prev_state);
+    uint32_t        downs =(changes    & curr_state);
+    uint32_t          ups =(changes    &~curr_state);
+    uint32_t        num_d = 0;
+    uint32_t        num_p = 0;
+    uint32_t        num_r = 0;
+    uint32_t         mask;
+    uint32_t       button;
+    uint32_t         i, j;
+
+    events->LeftTrigger         = (float) curr->LTrigger / (float) (255 - XINPUT_GAMEPAD_TRIGGER_THRESHOLD);
+    events->RightTrigger        = (float) curr->RTrigger / (float) (255 - XINPUT_GAMEPAD_TRIGGER_THRESHOLD);
+    events->LeftStick[0]        =  curr->LStick[0];
+    events->LeftStick[1]        =  curr->LStick[1];
+    events->LeftStickMagnitude  =  curr->LStick[3];
+    events->RightStick[0]       =  curr->RStick[0];
+    events->RightStick[1]       =  curr->RStick[1];
+    events->RightStickMagnitude =  curr->RStick[3];
+    for (i = 0; i < 32; ++i)
+    {
+        mask    = 1UL << i;
+        button  = mask; /* XINPUT_GAMEPAD_x */
+
+        if (num_d < max_events && (curr_state & mask) != 0)
+        {   /* this button is currently pressed */
+            events->ButtonsDown[num_d++] = (uint16_t) button;
+        }
+        if (num_p < max_events && (downs & mask) != 0)
+        {   /* this button was just pressed */
+            events->ButtonsPressed[num_p++] = (uint16_t) button;
+        }
+        if (num_r < max_events && (ups & mask) != 0)
+        {   /* this button was just released */
+            events->ButtonssReleased[num_r++] = (uint16_t) button;
+        }
+    }
+    events->ButtonDownCount     = num_d;
+    events->ButtonPressedCount  = num_p;
+    events->ButtonReleasedCount = num_r;
+}
+
+/* @summary Given two pointer state snapshots, generate events for keys down, pressed and released.
+ * @param events The keyboard events structure to populate.
+ * @param prev The state snapshot for the device from the previous update.
+ * @param curr The state snapshot for the device from the in-progress update.
+ */
+static void
+CORE__GeneratePointerInputEvents
+(
+    CORE_INPUT_POINTER_EVENTS     *events, 
+    CORE__INPUT_POINTER_STATE const *prev, 
+    CORE__INPUT_POINTER_STATE const *curr
+)
+{
+    uint32_t   max_events = events->MaxButtonEvents;
+    uint32_t   curr_state = curr->Buttons;
+    uint32_t   prev_state = prev->Buttons;
+    uint32_t      changes =(curr_state ^ prev_state);
+    uint32_t        downs =(changes    & curr_state);
+    uint32_t          ups =(changes    &~curr_state);
+    uint32_t        num_d = 0;
+    uint32_t        num_p = 0;
+    uint32_t        num_r = 0;
+    uint32_t         mask;
+    uint32_t       button;
+    uint32_t         i, j;
+
+    events->Cursor[0]  = curr->Pointer [0];
+    events->Cursor[1]  = curr->Pointer [1];
+    events->WheelDelta = curr->Relative[2];
+    if (curr->Flags & CORE__INPUT_POINTER_FLAG_ABSOLUTE)
+    {   /* calculate relative values as the delta between states */
+        events->Mickeys[0] = curr->Relative[0] - prev->Relative[0];
+        events->Mickeys[1] = curr->Relative[1] - prev->Relative[1];
+    }
+    else
+    {   /* the driver specified relative values - copy them as-is */
+        events->Mickeys[0] = curr->Relative[0];
+        events->Mickeys[1] = curr->Relative[1];
+    }
+    for (i = 0; i < 32; ++i)
+    {
+        mask    = 1UL << i;
+        button  = mask; /* MK_nBUTTON */
+
+        if (num_d < max_events && (curr_state & mask) != 0)
+        {   /* this button is currently pressed */
+            events->ButtonsDown[num_d++] = (uint16_t) button;
+        }
+        if (num_p < max_events && (downs & mask) != 0)
+        {   /* this button was just pressed */
+            events->ButtonsPressed[num_p++] = (uint16_t) button;
+        }
+        if (num_r < max_events && (ups & mask) != 0)
+        {   /* this button was just released */
+            events->ButtonssReleased[num_r++] = (uint16_t) button;
+        }
+    }
+    events->ButtonDownCount     = num_d;
+    events->ButtonPressedCount  = num_p;
+    events->ButtonReleasedCount = num_r;
+}
+
+/* @summary Given two keyboard state snapshots, generate events for keys down, pressed and released.
+ * @param events The keyboard events structure to populate.
+ * @param prev The state snapshot for the device from the previous update.
+ * @param curr The state snapshot for the device from the in-progress update.
+ */
+static void
+CORE__GenerateKeyboardInputEvents
+(
+    CORE_INPUT_KEYBOARD_EVENTS     *events, 
+    CORE__INPUT_KEYBOARD_STATE const *prev, 
+    CORE__INPUT_KEYBOARD_STATE const *curr
+)
+{
+    uint32_t   max_events = events->MaxKeyEvents;
+    uint32_t        num_d = 0;
+    uint32_t        num_p = 0;
+    uint32_t        num_r = 0;
+    uint32_t   curr_state;
+    uint32_t   prev_state;
+    uint32_t      changes;
+    uint32_t        downs;
+    uint32_t          ups;
+    uint32_t         mask;
+    uint32_t         vkey;
+    uint32_t         i, j;
+
+    for (i = 0; i < 8; ++i)
+    {
+        curr_state = curr->KeyState[i];
+        prev_state = prev->KeyState[i];
+        changes    =(curr_state ^ prev_state);
+        downs      =(changes    & curr_state);
+        ups        =(changes    &~curr_state);
+        for (j = 0; j < 32; ++j)
+        {
+            mask = 1UL << j;
+            vkey =  (i << 5) + j;
+
+            if (num_d < max_events && (curr_state & mask) != 0)
+            {   /* this key is currently pressed */
+                events->KeysDown[num_d++] = (uint8_t) vkey;
+            }
+            if (num_p < max_events && (downs & mask) != 0)
+            {   /* this key was just pressed */
+                events->KeysPressed[num_p++] = (uint8_t) vkey;
+            }
+            if (num_r < max_events && (ups & mask) != 0)
+            {   /* this key was just released */
+                events->KeysReleased[num_r++] = (uint8_t) vkey;
+            }
+        }
+    }
+    events->KeyDownCount     = num_d;
+    events->KeyPressedCount  = num_p;
+    events->KeyReleasedCount = num_r;
+}
+
+CORE_API(int)
+CORE_InputGetVirtualKeyAndScanCode
+(
+    uint32_t    *vkey_code, 
+    uint32_t    *scan_code,
+    RAWKEYBOARD const *key 
+)
+{
+    uint32_t vkey = key.VKey;
+    uint32_t scan = key.MakeCode;
+    uint32_t   e0 = key.Flags & RI_KEY_E0;
+
+    if (vkey == 255)
+    {   /* discard fake keys; these are just part of an escaped sequence */
+       *vkey_code = 0;
+       *scan_code = 0;
+        return 0;
+    }
+    if (vkey == VK_SHIFT)
+    {   /* correct left/right shift */
+        vkey  = MapVirtualKey(scan, MAPVK_VSC_TO_VK_EX);
+    }
+    if (vkey == VK_NUMLOCK)
+    {   /* correct PAUSE/BREAK and NUMLOCK. set the extended bit */
+        scan  = MapVirtualKey(vkey, MAPVK_VK_TO_VSC) | 0x100;
+    }
+    if (key.Flags & RI_KEY_E1)
+    {   /* for escaped sequences, turn the virtual key into the correct scan code.
+         * unfortunately, MapVirtualKey can't handle VK_PAUSE, so do that manually. */
+        if (vkey != VK_PAUSE) scan = MapVirtualKey(vkey, MAPVK_VK_TO_VSC);
+        else scan = 0x45;
+    }
+    switch (vkey)
+    {   /* map left/right versions of various keys */
+        case VK_CONTROL:  /* left/right CTRL */
+            vkey =  e0 ? VK_RCONTROL : VK_LCONTROL;
+            break;
+        case VK_MENU:     /* left/right ALT  */
+            vkey =  e0 ? VK_RMENU : VK_LMENU;
+            break;
+        case VK_RETURN:
+            vkey =  e0 ? VK_SEPARATOR : VK_RETURN;
+            break;
+        case VK_INSERT:
+            vkey = !e0 ? VK_NUMPAD0 : VK_INSERT;
+            break;
+        case VK_DELETE:
+            vkey = !e0 ? VK_DECIMAL : VK_DELETE;
+            break;
+        case VK_HOME:
+            vkey = !e0 ? VK_NUMPAD7 : VK_HOME;
+            break;
+        case VK_END:
+            vkey = !e0 ? VK_NUMPAD1 : VK_END;
+            break;
+        case VK_PRIOR:
+            vkey = !e0 ? VK_NUMPAD9 : VK_PRIOR;
+            break;
+        case VK_NEXT:
+            vkey = !e0 ? VK_NUMPAD3 : VK_NEXT;
+            break;
+        case VK_LEFT:
+            vkey = !e0 ? VK_NUMPAD4 : VK_LEFT;
+            break;
+        case VK_RIGHT:
+            vkey = !e0 ? VK_NUMPAD6 : VK_RIGHT;
+            break;
+        case VK_UP:
+            vkey = !e0 ? VK_NUMPAD8 : VK_UP;
+            break;
+        case VK_DOWN:
+            vkey = !e0 ? VK_NUMPAD2 : VK_DOWN;
+            break;
+        case VK_CLEAR:
+            vkey = !e0 ? VK_NUMPAD5 : VK_CLEAR;
+            break;
+    }
+   *vkey_code = vkey;
+   *scan_code = scan;
+    return 1;
+}
+
+CORE_API(size_t)
+CORE_InputCopyKeyDisplayName
+(
+    WCHAR           *buffer, 
+    size_t buffer_max_chars, 
+    uint32_t      vkey_code
+)
+{
+    uint32_t scan_code = 0;
+    uint32_t        e0 = 0;
+
+    if (vkey_code != VK_PAUSE)
+    {   /* map the virtual key code to the scan code */
+        if (vkey_code != VK_NUMLOCK)
+        {   /* common case - map the virtual key code to the scan code */
+            scan_code  = MapVirtualKey(vkey_code, MAPVK_VK_TO_VSC);
+        }
+        else
+        {   /* correct PAUSE/BREAK and NUMLOCK - set the extended bit */
+            scan_code  = MapVirtualKey(vkey_code, MAPVK_VK_TO_VSC) | 0x100;
+        }
+    }
+    else
+    {   /* correctly handle VK_PAUSE */
+        scan_code = 0x45;
+    }
+    /* determine whether to set the extended-key flag */
+    if (vkey_code == VK_RCONTROL || vkey_code == VK_RMENU  || vkey_code == VK_SEPARATOR || 
+        vkey_code == VK_INSERT   || vkey_code == VK_DELETE || vkey_code == VK_HOME      || 
+        vkey_code == VK_END      || vkey_code == VK_PRIOR  || vkey_code == VK_NEXT      || 
+        vkey_code == VK_LEFT     || vkey_code == VK_RIGHT  || vkey_code == VK_UP        || 
+        vkey_code == VK_DOWN     || vkey_code == VK_CLEAR)
+    {   /* set the extended key flag */
+        e0 = 1;
+    }
+    return (size_t)GetKeyNameTextW((LONG)((scan_code << 16) | (e0 << 24)), buffer, (int) buffer_max_chars);
+}
 
 #endif /* CORE_INPUT_IMPLEMENTATION */
 
