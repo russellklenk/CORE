@@ -30,8 +30,8 @@
 
 /* @summary Define the maximum number of input devices of each type.
  */
-#ifndef CORE_MAX_INPUT_DEVICES
-#define CORE_MAX_INPUT_DEVICES            4
+#ifndef CORE_INPUT_MAX_DEVICES_PER_TYPE
+#define CORE_INPUT_MAX_DEVICES_PER_TYPE   4
 #endif
 
 /* @summary Define the maximum number of keys that can be reported as down, pressed or released in a single update.
@@ -188,6 +188,9 @@ typedef struct _CORE_INPUT_SYSTEM_INIT {
     uint32_t                      MaxEventsPerPointer;    /* The maximum number of button events that should be reported per pointer device. */
     uint32_t                      MaxEventsPerKeyboard;   /* The maximum number of key events that should be reported per keyboard device. */
     uint32_t                      MaxInputEventsInFlight; /* The maximum number of _CORE_INPUT_EVENTS structures expected to be in use at any one time. */
+    HWND                          SourceWindow;           /* The handle of the window from which the input system receives input events. */
+    void                         *MemoryStart;            /* The start of the memory block providing storage for the input system. */
+    uint64_t                      MemorySize;             /* The size of the memory block providing storage for the input system, in bytes. */
 } CORE_INPUT_SYSTEM_INIT;
 
 #ifdef __cplusplus
@@ -222,12 +225,22 @@ CORE_InputCopyKeyDisplayName
     uint32_t      vkey_code
 );
 
+/* @summary Determine the amount of memory required to initialize an input system with the given configuration.
+ * The SourceWindow, MemoryStart and MemorySize fields of the INIT structure are not required to be set.
+ * @param init Data specifying the configuration of the input system.
+ * @return The minimum number of bytes required to successfully initialize an input system with the given attributes.
+ */
 CORE_API(size_t)
 CORE_QueryInputSystemMemorySize
 (
     CORE_INPUT_SYSTEM_INIT *init
 );
 
+/* @summary Initialize an input system object used to retrieve input events for a window.
+ * @param input_system On return, this location is updated with a pointer to the created input system object.
+ * @param init Data used to configure the input system.
+ * @return Zero if the input system is successfully initialized, or -1 if an error occurred.
+ */
 CORE_API(int)
 CORE_CreateInputSystem
 (
@@ -235,12 +248,19 @@ CORE_CreateInputSystem
     CORE_INPUT_SYSTEM_INIT             *init
 );
 
+/* @summary Free resources associated with an input system object.
+ * @param input_system The _CORE_INPUT_SYSTEM to destroy.
+ */
 CORE_API(void)
-CORE_ResetInputSystem
+CORE_DeleteInputSystem
 (
     struct _CORE_INPUT_SYSTEM *input_system
 );
 
+/* @summary Update the input device state based on a RawInput packet sent to the associated window.
+ * @param input_system The _CORE_INPUT_SYSTEM to update.
+ * @param input_packet The RawInput packet to process.
+ */
 CORE_API(void)
 CORE_PushRawInputPacket
 (
@@ -248,6 +268,11 @@ CORE_PushRawInputPacket
     RAWINPUT                  *input_packet
 );
 
+/* @summary Update the input device state based on a RawInput device change notification sent to the associated window.
+ * @param input_system The _CORE_INPUT_SYSTEM to update.
+ * @param wparam The WPARAM sent to the window with the device change message.
+ * @param lparam The LPARAM sent to the window with the device change message.
+ */
 CORE_API(void)
 CORE_PushRawInputDeviceChange
 (
@@ -256,6 +281,11 @@ CORE_PushRawInputDeviceChange
     LPARAM                           lparam
 );
 
+/* @summary Simulate a key press event.
+ * @param input_system The _CORE_INPUT_SYSTEM to update.
+ * @param device The handle of the target keyboard device.
+ * @param vkcode One of the VK_x constants identifying the pressed key.
+ */
 CORE_API(void)
 CORE_SimulateKeyPress
 (
@@ -264,6 +294,11 @@ CORE_SimulateKeyPress
     UINT                             vkcode
 );
 
+/* @summary Simulate a key release event.
+ * @param input_system The _CORE_INPUT_SYSTEM to update.
+ * @param device The handle of the target keyboard device.
+ * @param vkcode One of the VK_x constants identifying the released key.
+ */
 CORE_API(void)
 CORE_SimulateKeyRelease
 (
@@ -272,10 +307,24 @@ CORE_SimulateKeyRelease
     UINT                             vkcode
 );
 
+/* @summary Retrieve a _CORE_INPUT_EVENTS structure specifying the input device events that have occurred since the prior poll.
+ * The calling thread may block if the maximum number of input event buffers have been returned without being released.
+ * @param input_system The _CORE_INPUT_SYSTEM to query.
+ * @return An input event buffer specifying all of the input events that have occurred since the last consume operation.
+ */
 CORE_API(struct _CORE_INPUT_EVENTS*)
 CORE_ConsumeInputEvents
 (
     struct _CORE_INPUT_SYSTEM *input_system
+);
+
+/* @summary Return an input event buffer to the input system. This function may un-block a waiting thread.
+ * @param event_buffer The _CORE_INPUT_EVENTS representing the event buffer being returned.
+ */
+CORE_API(void)
+CORE_ReturnInputEvents
+(
+    struct _CORE_INPUT_EVENTS *event_buffer
 );
 
 #ifdef __cplusplus
@@ -400,19 +449,19 @@ CORE_ConsumeInputEvents
 /* @summary Define the data associated with an internal memory arena allocator.
  */
 typedef struct _CORE__INPUT_ARENA {
-    uint8_t                      *BaseAddress;            /* The base address of the memory range. */
-    size_t                        MemorySize;             /* The size of the memory block, in bytes. */
-    size_t                        NextOffset;             /* The offset of the next available address. */
+    uint8_t                         *BaseAddress;                 /* The base address of the memory range. */
+    size_t                           MemorySize;                  /* The size of the memory block, in bytes. */
+    size_t                           NextOffset;                  /* The offset of the next available address. */
 } CORE__INPUT_ARENA;
 
 /* @summary Define the state data associated with a single XInput gamepad device.
  */
 typedef struct _CORE__INPUT_GAMEPAD_STATE {
-    uint32_t                      LTrigger;               /* The left trigger value, in [0, 255]. */
-    uint32_t                      RTrigger;               /* The right trigger value, in [0, 255]. */
-    uint32_t                      Buttons;                /* A bit vector storing up to 32 button states, where a set bit indicates that the button is down. */
-    float                         LStick[4];              /* The left analog stick X, Y, magnitude and normalized magnitude. */
-    float                         RStick[4];              /* The right analog stick X, Y, magnitude and normalized magnitude. */
+    uint32_t                         LTrigger;                    /* The left trigger value, in [0, 255]. */
+    uint32_t                         RTrigger;                    /* The right trigger value, in [0, 255]. */
+    uint32_t                         Buttons;                     /* A bit vector storing up to 32 button states, where a set bit indicates that the button is down. */
+    float                            LStick[4];                   /* The left analog stick X, Y, magnitude and normalized magnitude. */
+    float                            RStick[4];                   /* The right analog stick X, Y, magnitude and normalized magnitude. */
 } CORE__INPUT_GAMEPAD_STATE;
 
 /* @summary Statically-initialize a _CORE__INPUT_GAMEPAD_STATE structure.
@@ -431,10 +480,10 @@ typedef struct _CORE__INPUT_GAMEPAD_STATE {
 /* @summary Define the state data associated with a single RawInput pointer device.
  */
 typedef struct _CORE__INPUT_POINTER_STATE {
-    int32_t                       Pointer[2];             /* The absolute X and Y coordinates of the pointer, in virtual display space. */
-    int32_t                       Relative[3];            /* The high definition relative X, Y and Z (wheel) values. The X and Y are specified in mickeys. */ 
-    uint32_t                      Buttons;                /* A bit vector storing up to 32 button states, where a set bit indicates that the button is down. */
-    uint32_t                      Flags;                  /* Bitflags indicating that postprocessing needs to be performed. */
+    int32_t                          Pointer[2];                  /* The absolute X and Y coordinates of the pointer, in virtual display space. */
+    int32_t                          Relative[3];                 /* The high definition relative X, Y and Z (wheel) values. The X and Y are specified in mickeys. */ 
+    uint32_t                         Buttons;                     /* A bit vector storing up to 32 button states, where a set bit indicates that the button is down. */
+    uint32_t                         Flags;                       /* Bitflags indicating that postprocessing needs to be performed. */
 } CORE__INPUT_POINTER_STATE;
 
 /* @summary Statically-initialize a _CORE__INPUT_POINTER_STATE structure.
@@ -452,7 +501,7 @@ typedef struct _CORE__INPUT_POINTER_STATE {
 /* @summary Define the state data associated with a single RawInput keyboard device.
  */
 typedef struct _CORE__INPUT_KEYBOARD_STATE {
-    uint32_t                      KeyState[8];            /* A bitvector (256 bits) mapping scan code to key state, where a set bit indicates that the key is down. */
+    uint32_t                         KeyState[8];                 /* A bitvector (256 bits) mapping scan code to key state, where a set bit indicates that the key is down. */
 } CORE__INPUT_KEYBOARD_STATE;
 
 /* @summary Statically-initialize a _CORE__INPUT_KEYBOARD_STATE structure.
@@ -467,21 +516,24 @@ typedef struct _CORE__INPUT_KEYBOARD_STATE {
 /* @summary Define the data associated with a list of input devices of a particular type.
  */
 typedef struct _CORE__INPUT_DEVICE_LIST {
-    uint32_t                      MaxDevices;             /* The maximum number of device records that can be stored in the list. This value defines the dimension of the DeviceHandle and DeviceState arrays. */
-    uint32_t                      DeviceCount;            /* The number of valid device records in the list. This value defines the number of valid values in the DeviceHandle and DeviceState arrays. */
-    HANDLE                       *DeviceHandle;           /* An array of MaxDevices device handles, of which DeviceCount are valid, specifying unique identifiers for each input device in the list. */
-    void                         *DeviceState;            /* An array of MaxDevices structures, of which DeviceCount are valid. The structure type is one of _CORE__INPUT_GAMEPAD_STATE, _CORE__INPUT_POINTER_STATE or _CORE__INPUT_KEYBOARD_STATE. All instances have the same type. */
+    uint32_t                         MaxDevices;                  /* The maximum number of device records that can be stored in the list. This value defines the dimension of the DeviceHandle and DeviceState arrays. */
+    uint32_t                         DeviceCount;                 /* The number of valid device records in the list. This value defines the number of valid values in the DeviceHandle and DeviceState arrays. */
+    HANDLE                          *DeviceHandle;                /* An array of MaxDevices device handles, of which DeviceCount are valid, specifying unique identifiers for each input device in the list. */
+    void                            *DeviceState;                 /* An array of MaxDevices structures, of which DeviceCount are valid. The structure type is one of _CORE__INPUT_GAMEPAD_STATE, _CORE__INPUT_POINTER_STATE or _CORE__INPUT_KEYBOARD_STATE. All instances have the same type. */
 } CORE__INPUT_DEVICE_LIST;
 
 /* @summary Define the data associated with a RawInput device membership set computed from two device list snapshots.
+ * The maximum number of entries in the set is 2 * the maximum number of devices per-type, because (theoretically) the device list snapshots could have a completely different set of devices.
  */
 typedef struct _CORE__INPUT_DEVICE_SET {
-    uint32_t                      MaxDevices;             /* The maximum number of device records in the set. This value defines the dimension of the DeviceIds/Membership/PrevIndex/CurrIndex arrays. */
-    uint32_t                      DeviceCount;            /* The number of valid device records in the set. This value defines the number of valid entries in the DeviceIds, Membership, PrevIndex and CurrIndex arrays. */
-    HANDLE                       *DeviceIds;              /* An array of MaxDevices device handles, of which DeviceCount are valid, uniquely identifying the devices in the set. */
-    uint32_t                     *Membership;             /* An array of MaxDevices _CORE__INPUT_DEVICE_SET_MEMBERSHIP bit flags, of which DeviceCount are valid, specifying the membership for each device in the set. */
-    uint8_t                      *PrevIndex;              /* An array of MaxDevices index values, of which DeviceCount are valid, specifying the index of the device in the previous device list. */
-    uint8_t                      *CurrIndex;              /* An array of MaxDevices index values, of which DeviceCount are valid, specifying the index of the device in the current device list. */
+    #define MAX_DEVICES             (CORE_INPUT_MAX_DEVICES_PER_TYPE*2)
+    uint32_t                         MaxDevices;                  /* The maximum number of device records in the set. This value defines the dimension of the DeviceIds/Membership/PrevIndex/CurrIndex arrays. */
+    uint32_t                         DeviceCount;                 /* The number of valid device records in the set. This value defines the number of valid entries in the DeviceIds, Membership, PrevIndex and CurrIndex arrays. */
+    HANDLE                           DeviceIds [MAX_DEVICES];     /* An array of MaxDevices device handles, of which DeviceCount are valid, uniquely identifying the devices in the set. */
+    uint32_t                         Membership[MAX_DEVICES];     /* An array of MaxDevices _CORE__INPUT_DEVICE_SET_MEMBERSHIP bit flags, of which DeviceCount are valid, specifying the membership for each device in the set. */
+    uint8_t                          PrevIndex [MAX_DEVICES];     /* An array of MaxDevices index values, of which DeviceCount are valid, specifying the index of the device in the previous device list. */
+    uint8_t                          CurrIndex [MAX_DEVICES];     /* An array of MaxDevices index values, of which DeviceCount are valid, specifying the index of the device in the current device list. */
+    #undef  MAX_DEVICES
 } CORE__INPUT_DEVICE_SET;
 
 /* @summary Define the function pointer types for the entry points loaded from the XInput module on the host system.
@@ -508,19 +560,37 @@ typedef struct _CORE__INPUT_XINPUT_DISPATCH {
     XInputGetAudioDeviceIds_Func     XInputGetAudioDeviceIds;     /* The pointer to the XInputGetAudioDeviceIds function. */
 } CORE__INPUT_XINPUT_DISPATCH;
 
+/* @summary Define the data associated with an input system. An input system manages the user input associated with a single window.
+ */
 typedef struct _CORE_INPUT_SYSTEM {
-    CORE__INPUT_XINPUT_DISPATCH   XInput;                 /* */
+    HANDLE                           QueueSemaphore;              /* A semaphore object used to sleep a thread attempting to acquire an input event snapshot. */
+    CORE_INPUT_EVENTS              **InputEventsQueue;            /* A fixed-size array of pointers to CORE_INPUT_EVENTS from which threads acquire an input event snapshot. */
+    uint32_t                         InputEventsCount;            /* The number of CORE_INPUT_EVENTS structures allocated within the system and representing the maximum number of in-flight snapshots. */
+    uint32_t                         QueueHead;                   /* The queue index of the next available item in input events queue. */
+    uint32_t                         WriteIndex;                  /* The array index of the buffer to which input state is written. This value is either 0 or 1. */
+    CRITICAL_SECTION                 WriterLock;                  /* Lock used to synchronize a thread pushing input data with a thread acquiring an input event snapshot. */
+    uint32_t                         GamepadPorts[2];             /* A bit vector where a bit is set if a gamepad port was connected. WriteIndex accesses the data for the current tick. */
+    CORE__INPUT_DEVICE_LIST          GamepadDeviceList[2];        /* The list of gamepad devices seen on the current and previous tick. WriteIndex accesses the data for the current tick. */
+    CORE__INPUT_DEVICE_LIST          PointerDeviceList[2];        /* The list of pointer devices seen on the current and previous tick. WriteIndex accesses the data for the current tick. */
+    CORE__INPUT_DEVICE_LIST          KeyboardDeviceList[2];       /* The list of keyboard devices seen on the current and previous tick. WriteIndex accesses the data for the current tick. */
+    CORE__INPUT_XINPUT_DISPATCH      XInput;                      /* The XInput API dispatch table used for polling gamepad state. */
+    CRITICAL_SECTION                 ReturnLock;                  /* Lock used to synchronize multiple threads concurrently returning input event buffers. */
+    uint32_t                         QueueTail;                   /* The queue index of the next return slot in the input events queue. */
+    CORE_INPUT_EVENTS              **InputEvents;                 /* Storage for the set of CORE_INPUT_EVENTS managed by the input system. */
+    void                            *MemoryStart;                 /* The start of the memory block providing storage for the input system. */
+    uint64_t                         MemorySize;                  /* The size of the memory block providing storage for the input system, in bytes. */
+    HWND                             SourceWindow;                /* The handle of the window from which the input system receives data. */
 } CORE__INPUT_SYSTEM;
 
 typedef enum _CORE__INPUT_DEVICE_SET_MEMBERSHIP {
-    CORE__INPUT_DEVICE_SET_MEMBERSHIP_NONE = (0UL << 0),  /* The device is not present in the previous or the current list. */
-    CORE__INPUT_DEVICE_SET_MEMBERSHIP_PREV = (1UL << 0),  /* The device is present in the previous device list. */
-    CORE__INPUT_DEVICE_SET_MEMBERSHIP_CURR = (1UL << 1),  /* The device is present in the current device list. */
+    CORE__INPUT_DEVICE_SET_MEMBERSHIP_NONE = (0UL << 0),          /* The device is not present in the previous or the current list. */
+    CORE__INPUT_DEVICE_SET_MEMBERSHIP_PREV = (1UL << 0),          /* The device is present in the previous device list. */
+    CORE__INPUT_DEVICE_SET_MEMBERSHIP_CURR = (1UL << 1),          /* The device is present in the current device list. */
 } CORE__INPUT_DEVICE_SET_MEMBERSHIP;
 
 typedef enum _CORE__INPUT_POINTER_FLAGS {
-    CORE__INPUT_POINTER_FLAGS_NONE         = (0UL << 0),  /* No post-processing is required. */
-    CORE__INPUT_POINTER_FLAG_ABSOLUTE      = (1UL << 0),  /* The device only specifies absolute positioning. */
+    CORE__INPUT_POINTER_FLAGS_NONE         = (0UL << 0),          /* No post-processing is required. */
+    CORE__INPUT_POINTER_FLAG_ABSOLUTE      = (1UL << 0),          /* The device only specifies absolute positioning. */
 } CORE__INPUT_POINTER_FLAGS;
 
 /* @summary Initialize a memory arena allocator around an externally-managed memory block.
@@ -874,6 +944,9 @@ CORE__DetermineInputDeviceSet
     uint32_t num_prev = prev->DeviceCount;
     uint32_t num_curr = curr->DeviceCount;
     uint32_t i, j, m, n;
+
+    /* the set always has a fixed capacity/fixed size */
+    set->MaxDevices = CORE_INPUT_MAX_DEVICES_PER_TYPE * 2;
 
     /* initialize the state of the device set based on the previous snapshot */
     for (i = 0, n = set->MaxDevices; i < n; ++i)
@@ -1344,6 +1417,23 @@ CORE__GenerateKeyboardInputEvents
     events->KeyReleasedCount = num_r;
 }
 
+/* @summary Build a device set and generate events related to device attachment and removal.
+ * @param events The CORE_INPUT_EVENTS to update.
+ * @param device_set A CORE__INPUT_DEVICE_SET to populate with information about ...
+ * @param device_list_prev 
+ * @param device_list_curr
+ */
+static void
+CORE__GenerateKeyboardDeviceEvents
+(
+    CORE_INPUT_EVENTS                 *events, 
+    CORE__INPUT_DEVICE_SET        *device_set, 
+    CORE__INPUT_DEVICE_LIST *device_list_prev, 
+    CORE__INPUT_DEVICE_LIST *device_list_curr
+)
+{
+}
+
 CORE_API(int)
 CORE_InputGetVirtualKeyAndScanCode
 (
@@ -1463,6 +1553,384 @@ CORE_InputCopyKeyDisplayName
     }
     return (size_t)GetKeyNameTextW((LONG)((scan_code << 16) | (e0 << 24)), buffer, (int) buffer_max_chars);
 }
+
+CORE_API(size_t)
+CORE_QueryInputSystemMemorySize
+(
+    CORE_INPUT_SYSTEM_INIT *init
+)
+{
+    size_t required_size = 0;
+    size_t   events_size = 0;
+    uint32_t        i, n;
+    /* calculate the amount of memory required for the data stored directly in _CORE_INPUT_SYSTEM.
+     * this includes the size of the structure itself, since all data is private.
+     */
+    required_size += CORE__InputAllocationSizeType (CORE__INPUT_SYSTEM);
+    required_size += CORE__InputAllocationSizeArray(CORE_INPUT_EVENTS*, init->MaxInputEventsInFlight); /* InputEventsQueue */
+    required_size += CORE__InputAllocationSizeArray(CORE_INPUT_EVENTS*, init->MaxInputEventsInFlight); /* InputEvents      */
+    /* calculate the amount of memory required for each _CORE_INPUT_EVENTS in the pool */
+    events_size   += CORE__InputAllocationSizeType (CORE_INPUT_EVENTS);
+    // TODO: Device lists
+    if (init->MaxGamepadDevices > 0)
+    {   events_size += CORE__InputAllocationSizeArray(DWORD                     , init->MaxGamepadDevices);  /* GamepadDeviceIds     */
+        events_size += CORE__InputAllocationSizeArray(CORE_INPUT_GAMEPAD_EVENTS , init->MaxGamepadDevices);  /* GamepadDeviceEvents  */
+        events_size += CORE__InputAllocationSizeArray(DWORD                     , init->MaxGamepadDevices);  /* GamepadAttachList    */
+        events_size += CORE__InputAllocationSizeArray(DWORD                     , init->MaxGamepadDevices);  /* GamepadRemoveList    */
+        events_size += CORE__InputAllocationSizeArray(uint16_t, init->MaxEventsPerGamepad * 3) * init->MaxGamepadDevices; /* ButtonsDown/Pressed/Released */
+    }
+    if (init->MaxPointerDevices > 0)
+    {   events_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxPointerDevices);  /* PointerDeviceIds     */
+        events_size += CORE__InputAllocationSizeArray(CORE_INPUT_POINTER_EVENTS , init->MaxPointerDevices);  /* PointerDeviceEvents  */
+        events_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxPointerDevices);  /* PointerAttachList    */
+        events_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxPointerDevices);  /* PointerRemoveList    */
+        events_size += CORE__InputAllocationSizeArray(uint16_t, init->MaxEventsPerPointer * 3) * init->MaxPointerDevices; /* ButtonsDown/Pressed/Released */
+    }
+    if (init->MaxKeyboardDevices > 0)
+    {   events_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxKeyboardDevices); /* KeyboardDeviceIds    */
+        events_size += CORE__InputAllocationSizeArray(CORE_INPUT_KEYBOARD_EVENTS, init->MaxKeyboardDevices); /* KeyboardDeviceEvents */
+        events_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxKeyboardDevices); /* KeyboardAttachList   */
+        events_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxKeyboardDevices); /* KeyboardRemoveList   */
+        events_size += CORE__InputAllocationSizeArray(uint8_t, init->MaxEventsPerKeyboard * 3) * init->MaxKeyboardDevices; /* KeysDown/Pressed/Released */
+    }
+    /* calculate the total memory required for all data */
+    required_size +=(events_size * init->MaxInputEventsInFlight);
+    return required_size;
+}
+
+CORE_API(int)
+CORE_CreateInputSystem
+(
+    struct _CORE_INPUT_SYSTEM **input_system,
+    CORE_INPUT_SYSTEM_INIT             *init
+)
+{
+    CORE__INPUT_ARENA    arena;
+    CORE__INPUT_SYSTEM *system = NULL;
+    CORE_INPUT_EVENTS  *events = NULL;
+    size_t       required_size = 0;
+    int   missing_entry_points = 0;
+    uint32_t        i, j, n, m;
+
+    if (init->SourceWindow == NULL)
+    {   /* the source window must be specified */
+        assert(init->SourceWindow != NULL);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    if (init->MemoryStart == NULL || init->MemorySize == 0)
+    {   /* the caller must supply memory for the input system data */
+        assert(init->MemoryStart != NULL);
+        assert(init->MemorySize > 0);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    if (init->MaxPointerDevices  > CORE_INPUT_MAX_DEVICES_PER_TYPE || 
+        init->MaxGamepadDevices  > CORE_INPUT_MAX_DEVICES_PER_TYPE || 
+        init->MaxKeyboardDevices > CORE_INPUT_MAX_DEVICES_PER_TYPE)
+    {   /* the caller wants to enable more than the maximum allowable number of devices per-type */
+        assert(init->MaxPointerDevices  <= CORE_INPUT_MAX_DEVICES_PER_TYPE);
+        assert(init->MaxGamepadDevices  <= CORE_INPUT_MAX_DEVICES_PER_TYPE);
+        assert(init->MaxKeyboardDevices <= CORE_INPUT_MAX_DEVICES_PER_TYPE);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    if (init->MaxEventsPerPointer > CORE_INPUT_MAX_BUTTONS || 
+        init->MaxEventsPerGamepad > CORE_INPUT_MAX_BUTTONS)
+    {   /* the caller wants to support devices with many (> 32) buttons */
+        assert(init->MaxEventsPerPointer <= CORE_INPUT_MAX_BUTTONS);
+        assert(init->MaxEventsPerGamepad <= CORE_INPUT_MAX_BUTTONS);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    if (init->MaxEventsPerKeyboard > CORE_INPUT_MAX_KEYS)
+    {   /* the caller wants more than 256 key events */
+        assert(init->MaxEventsPerKeyboard <= CORE_INPUT_MAX_KEYS);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    if (init->MaxInputEventsInFlight == 0)
+    {   /* there must be at least one input events buffer */
+        assert(init->MaxInputEventsInFlight > 0);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+
+    required_size = CORE_QueryInputSystemMemorySize(init);
+    if (init->MemorySize < required_size)
+    {   /* the caller must supply sufficient memory for the storage object */
+        assert(init->MemorySize >= required_size);
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+
+    /* zero-initialize the entire memory block and allocate the base structure */
+    ZeroMemory(init->MemoryStart, (size_t) init->MemorySize);
+    CORE__InputInitMemoryArena(&arena, init->MemoryStart, (size_t) init->MemorySize);
+    system = CORE__InputMemoryArenaAllocateType(&arena, CORE__INPUT_SYSTEM);
+    if (!InitializeCriticalSectionAndSpinCount(&system->WriterLock, 0x1000))
+    {   /* this should never happen on XP and above */
+       *input_system = NULL;
+        return -1;
+    }
+    if (!InitializeCriticalSectionAndSpinCount(&system->ReturnLock, 0x1000))
+    {   /* this should never happen on XP and above */
+        DeleteCriticalSection(&system->WriterLock);
+       *input_system = NULL;
+        return -1;
+    }
+    if ((system->QueueSemaphore = CreateSemaphore(NULL, (LONG) init->MaxInputEventsInFlight, (LONG) init->MaxInputEventsInFlight, NULL)) == NULL)
+    {   /* failed to create the semaphore used to throttle event snapshot consumption */
+        goto cleanup_and_fail;
+    }
+    if (init->MaxGamepadDevices > 0)
+    {   /* the user has enabled gamepad devices, so load XInput */
+        CORE__LoadXInput(&system->XInput, &missing_entry_points);
+    }
+    /* allocate the arrays within the input system */
+    system->InputEventsQueue = CORE__InputMemoryArenaAllocateArray(CORE_INPUT_EVENTS*, init->MaxInputEventsInFlight);
+    system->InputEvents      = CORE__InputMemoryArenaAllocateArray(CORE_INPUT_EVENTS*, init->MaxInputEventsInFlight);
+    system->InputEventsCount = init->MaxInputEventsInFlight;
+    system->QueueHead        = 0;
+    system->WriteIndex       = 0;
+    system->GamepadPorts[0]  = 0;
+    system->GamepadPorts[1]  = 0;
+    system->QueueTail        = init->MaxInputEventsInFlight - 1;
+    system->MemoryStart      = init->MemoryStart;
+    system->MemorySize       = init->MemorySize;
+    system->SourceWindow     = init->SourceWindow;
+    /* allocate the device lists */
+    for (i = 0; i < 2; ++i)
+    {
+        system->GamepadDeviceList [i].MaxDevices  = init->MaxGamepadDevices;
+        system->GamepadDeviceList [i].DeviceCount = 0;
+        system->PointerDeviceList [i].MaxDevices  = init->MaxPointerDevices;
+        system->PointerDeviceList [i].DeviceCount = 0;
+        system->KeyboardDeviceList[i].MaxDevices  = init->MaxKeyboardDevices;
+        system->KeyboardDeviceList[i].DeviceCount = 0;
+        if (init->MaxGamepadDevices > 0)
+        {   /* allocate the arrays for the device list */
+            system->GamepadDeviceList[i].DeviceHandle = CORE__InputMemoryArenaAllocateArray(HANDLE                   , init->MaxGamepadDevices);
+            system->GamepadDeviceList[i].DeviceState  = CORE__InputMemoryArenaAllocateArray(CORE__INPUT_GAMEPAD_STATE, init->MaxGamepadDevices);
+        }
+        else
+        {   /* the user has not enabled gamepad device support */
+            system->GamepadDeviceList[i].DeviceHandle = NULL;
+            system->GamepadDeviceList[i].DeviceState  = NULL;
+        }
+        if (init->MaxPointerDevices > 0)
+        {   /* allocate the arrays for the device list */
+            system->PointerDeviceList[i].DeviceHandle = CORE__InputMemoryArenaAllocateArray(HANDLE                   , init->MaxPointerDevices);
+            system->PointerDeviceList[i].DeviceState  = CORE__InputMemoryArenaAllocateArray(CORE__INPUT_POINTER_STATE, init->MaxPointerDevices);
+        }
+        else
+        {   /* the user has not enabled pointer device support */
+            system->PointerDeviceList[i].DeviceHandle = NULL;
+            system->PointerDeviceList[i].DeviceState  = NULL;
+        }
+        if (init->MaxKeyboardDevices > 0)
+        {   /* allocate the arrays for the device list */
+            system->KeyboardDeviceList[i].DeviceHandle = CORE__InputMemoryArenaAllocateArray(HANDLE                    , init->MaxKeyboardDevices);
+            system->KeyboardDeviceList[i].DeviceState  = CORE__InputMemoryArenaAllocateArray(CORE__INPUT_KEYBOARD_STATE, init->MaxKeyboardDevices);
+        }
+        else
+        {   /* the user has not enabled keyboard device support */
+            system->KeyboardDeviceList[i].DeviceHandle = NULL;
+            system->KeyboardDeviceList[i].DeviceState  = NULL;
+        }
+    }
+    /* allocate the event buffers */
+    for (i = 0, n = init->MaxInputEventsInFlight; i < n; ++i)
+    {   /* initialize the individual CORE_INPUT_EVENTS object */
+        events= CORE__InputMemoryArenaAllocateType(CORE_INPUT_EVENTS);
+        events->InputSystem         = system;
+        events->NextEvents          = NULL;
+        events->StartTime           = 0;
+        events->CaptureTime         = 0;
+        events->MaxGamepadDevices   = init->MaxGamepadDevices;
+        events->MaxPointerDevices   = init->MaxPointerDevices;
+        events->MaxKeyboardDevices  = init->MaxKeyboardDevices;
+        if (init->MaxGamepadDevices > 0)
+        {   /* allocate the arrays for the gamepad devices */
+            events->GamepadDeviceIds    = CORE__InputMemoryArenaAllocateArray(DWORD                    , init->MaxGamepadDevices);
+            events->GamepadAttachList   = CORE__InputMemoryArenaAllocateArray(DWORD                    , init->MaxGamepadDevices);
+            events->GamepadRemoveList   = CORE__InputMemoryArenaAllocateArray(DWORD                    , init->MaxGamepadDevices);
+            events->GamepadDeviceEvents = CORE__InputMemoryArenaAllocateArray(CORE_INPUT_GAMEPAD_EVENTS, init->MaxGamepadDevices);
+            for (j = 0, m = init->MaxGamepadDevices; j < m; ++j)
+            {
+                CORE_INPUT_GAMEPAD_EVENTS *device_ev = &events->GamepadDeviceEvents[j];
+                device_ev->MaxButtonEvents = init->MaxEventsPerGamepad;
+                device_ev->ButtonsDown     = CORE__InputMemoryArenaAllocateArray(uint16_t, init->MaxEventsPerGamepad);
+                device_ev->ButtonsPressed  = CORE__InputMemoryArenaAllocateArray(uint16_t, init->MaxEventsPerGamepad);
+                device_ev->ButtonsReleased = CORE__InputMemoryArenaAllocateArray(uint16_t, init->MaxEventsPerGamepad);
+            }
+        }
+        else
+        {   /* the user has not enabled gamepad device support */
+            events->GamepadDeviceIds    = NULL;
+            events->GamepadAttachList   = NULL;
+            events->GamepadRemoveList   = NULL;
+            events->GamepadDeviceEvents = NULL;
+        }
+        if (init->MaxPointerDevices > 0)
+        {   /* allocate the arrays for the pointer devices */
+            events->PointerDeviceIds    = CORE__InputMemoryArenaAllocateArray(HANDLE                   , init->MaxPointerDevices);
+            events->PointerAttachList   = CORE__InputMemoryArenaAllocateArray(HANDLE                   , init->MaxPointerDevices);
+            events->PointerRemoveList   = CORE__InputMemoryArenaAllocateArray(HANDLE                   , init->MaxPointerDevices);
+            events->PointerDeviceEvents = CORE__InputMemoryArenaAllocateArray(CORE_INPUT_POINTER_EVENTS, init->MaxPointerDevices);
+            for (j = 0, m = init->MaxPointerDevices; j < m; ++j)
+            {
+                CORE_INPUT_POINTER_EVENTS *device_ev = &events->PointerDeviceEvents[j];
+                device_ev->MaxButtonEvents = init->MaxEventsPerPointer;
+                device_ev->ButtonsDown     = CORE__InputMemoryArenaAllocateArray(uint16_t, init->MaxEventsPerPointer);
+                device_ev->ButtonsPressed  = CORE__InputMemoryArenaAllocateArray(uint16_t, init->MaxEventsPerPointer);
+                device_ev->ButtonsReleased = CORE__InputMemoryArenaAllocateArray(uint16_t, init->MaxEventsPerPointer);
+            }
+        }
+        else
+        {   /* the user has not enabled pointer device support */
+            events->PointerDeviceIds    = NULL;
+            events->PointerAttachList   = NULL;
+            events->PointerRemoveList   = NULL;
+            events->PointerDeviceEvents = NULL;
+        }
+        if (init->MaxKeyboardDevices > 0)
+        {   /* allocate the arrays for the keyboard devices */
+            events->KeyboardDeviceIds    = CORE__InputMemoryArenaAllocateArray(HANDLE                    , init->MaxKeyboardDevices);
+            events->KeyboardAttachList   = CORE__InputMemoryArenaAllocateArray(HANDLE                    , init->MaxKeyboardDevices);
+            events->KeyboardRemoveList   = CORE__InputMemoryArenaAllocateArray(HANDLE                    , init->MaxKeyboardDevices);
+            events->KeyboardDeviceEvents = CORE__InputMemoryArenaAllocateArray(CORE_INPUT_KEYBOARD_EVENTS, init->MaxKeyboardDevices);
+            for (j = 0, m = init->MaxKeyboardDevices; j < m; ++j)
+            {
+                CORE_INPUT_KEYBOARD_EVENTS *device_ev = &events->KeyboardDeviceEvents[j];
+                device_ev->MaxKeyEvents  = init->MaxEventsPerKeyboard;
+                device_ev->KeysDown      = CORE__InputMemoryArenaAllocateArray(uint8_t, init->MaxEventsPerKeyboard);
+                device_ev->KeysPressed   = CORE__InputMemoryArenaAllocateArray(uint8_t, init->MaxEventsPerKeyboard);
+                device_ev->KeysReleased  = CORE__InputMemoryArenaAllocateArray(uint8_t, init->MaxEventsPerKeyboard);
+            }
+        }
+        else
+        {   /* the user has not enabled keyboard device support */
+            events->KeyboardDeviceIds    = NULL;
+            events->KeyboardAttachList   = NULL;
+            events->KeyboardRemoveList   = NULL;
+            events->KeyboardDeviceEvents = NULL;
+        }
+    }
+   *input_system = system;
+    return 0;
+
+cleanup_and_fail:
+    if (system->XInput.XInputModule != NULL)
+    {
+        FreeLibrary(system->XInput.XInputModule); 
+    }
+    DeleteCriticalSection(&system->ReturnLock);
+    DeleteCriticalSection(&system->WriterLock);
+    CloseHandle(system->QueueSemaphore);
+   *input_system = NULL;
+    return -1;
+}
+#if 0
+There are three players here. There is one system per-window.
+1. Thread managing the window and pushing data into the system.
+   Only one thread can fill role #1.
+   This thread must synchronize with #2.
+   This thread writes to the current 'write buffer'.
+2. Thread attempting to grab an event snapshot.
+   Only one thread can fill role #2, though it may poll one system per-window.
+   This thread must synchronize with one thread filling role #1.
+   - It swaps the buffers, and takes ownership of the previous 'write buffer'.
+   This thread must synchronize with one or more threads filling role #3.
+   - It attempts to take an event buffer from the head of the FIFO.
+   - The calling thread must block until an event buffer is available.
+3. Thread attempting to return an event buffer that is no longer needed.
+   More than one thread can fill role #3.
+   This thread must synchronize with zero or more threads filling role #3.
+   - It only updates the tail of the queue and returns very quickly.
+
+Basically, the system maintains a semaphore initialized with the maximum number of in-flight frames.
+There's also a CRITICAL_SECTION used to synchronize concurrent #3. 
+Given indices H and T, the initial state is:
+- Sem(Capacity)
+- CS_WRITEBUF
+- CS_RETURN
+- H = 0
+- T = Capacity - 1
+- dbuf
+
+A thread #1 does:
+Enter(CS_WRITEBUF)
+ProcessData(packet, device_list[dbuf])
+Leave(CS_WRITEBUF)
+
+A thread #2 does:
+Wait(Sem); /* when this unblocks, an item is available */
+slot = head % Capacity;
+item = stor[slot];
+head++
+Enter(CS_WRITEBUF)
+sbuf = dbuf      /* sbuf is the buffer we will read from - the previous write buffer */
+dbuf = 1 - dbuf; /* dbuf is the buffer thread #1 will write to */
+Leave(CS_WRITEBUF)
+
+A thread #3 does:
+Enter(CS_RETURN)
+slot = tail % Capacity;
+stor[slot] = item
+tail++
+Leave(CS_RETURN)
+Make(Sem) /* make an item available for a thread #2 */
+
+Really, there is only ever one events object in flight at any one time in a naive implementation.
+The frame launch collects an events object from each window. These are used until the frame completes.
+The next frame launch cannot begin until the in-flight frame completes.
+This holds as long as a frame can be completed in a single tick.
+If the tick rate is very high, say 240Hz, this may not hold. It might also not be a good idea, because 
+you're "spawn a bunch of work, and wait until it drains completely". This fails to keep the system busy, 
+for example, you fire off a frame, but the images are not all ready in time, so you have some workers 
+busy and others idle. You can either wait and be unresponsive, missing input and falling behind, or 
+potentially launch the next frame and use the idle workers to get a head start.
+#endif
+typedef struct _CORE_INPUT_EVENTS {
+    struct _CORE_INPUT_SYSTEM    *InputSystem;            /* The _CORE_INPUT_SYSTEM that owns the input event buffer. */
+    struct _CORE_INPUT_EVENTS    *NextEvents;             /* A pointer to the next item in the queue. User code always sees this value as NULL. */
+    uint64_t                      StartTime;              /* The timestamp, in nanoseconds, at which the input event interval began. */
+    uint64_t                      CaptureTime;            /* The timestamp, in nanoseconds, at which the input events were retrieved by the application. */
+    uint32_t                      MaxGamepadDevices;      /* The maximum number of gamepad devices that can be attached to the system. This value defines the dimensions of the GamepadAttachList/GamepadRemoveList/GamepadDeviceIds/GamepadDeviceEvents arrays. */
+    uint32_t                      GamepadAttachCount;     /* The number of gamepad devices that were attached to the system since the last poll. This value defines the number of valid entries in the GamepadAttachList array. */
+    uint32_t                      GamepadRemoveCount;     /* The number of gamepad devices that were detached from the system since the last poll. This value defines the number of valid entries in the GamepadRemoveList array. */
+    uint32_t                      GamepadDeviceCount;     /* The number of gamepad devices that are currently attached to the system. This value defines the number of valid entries in the GamepadDeviceIds and GamepadDeviceEvents arrays. */
+    DWORD                        *GamepadDeviceIds;       /* An array of GamepadDeviceCount entries specifying the port numbers to which active gamepads are attached. */
+    CORE_INPUT_GAMEPAD_EVENTS    *GamepadDeviceEvents;    /* An array of GamepadDeviceCount entries specifying the input events that have occurred for each attached gamepad device. */
+    DWORD                        *GamepadAttachList;      /* An array of GamepadAttachCount entries specifying the port IDs to which gamepad devices were attached since the last poll. */
+    DWORD                        *GamepadRemoveList;      /* An array of GamepadRemoveCount entries specifying the port IDs from which gamepad devices were removed since the last poll.*/
+    uint32_t                      MaxPointerDevices;      /* The maximum number of pointer devices that can be attached to the system. This value defines the dimensions of the PointerAttachList/PointerRemoveList/PointerDeviceIds/PointerDeviceEvents arrays. */
+    uint32_t                      PointerAttachCount;     /* The number of pointer devices that were attached to the system since the last poll. This value defines the number of valid entries in the PointerAttachList array. */
+    uint32_t                      PointerRemoveCount;     /* The number of pointer devices that were detached from the system since the last poll. This value defines the number of valid entries in the PointerRemoveList array. */
+    uint32_t                      PointerDeviceCount;     /* The number of pointer devices that are currently attached to the system. This value defines the number of valid entries in the PointerDeviceIds and PointerDeviceEvents arrays. */
+    HANDLE                       *PointerDeviceIds;       /* An array of PointerDeviceCount handles specifying unique identifiers for each pointer device attached to the system. */
+    CORE_INPUT_POINTER_EVENTS    *PointerDeviceEvents;    /* An array of PointerDeviceCount entries specifying the input events that have occurred since the last poll for each pointer device. */
+    HANDLE                       *PointerAttachList;      /* An array of PointerAttachCount entries specifying the device identifiers for each pointer device attached to the system since the last poll. */
+    HANDLE                       *PointerRemoveList;      /* An array of PointerRemoveCount entries specifying the device identifiers for each pointer device detached from the system since the last poll. */
+    uint32_t                      MaxKeyboardDevices;     /* The maximum number of keyboard devices that can be attached to the system. This value defines the dimensions of the KeyboardAttachList/KeyboardRemoveList/KeyboardDeviceIds/KeyboardDeviceEvents arrays. */
+    uint32_t                      KeyboardAttachCount;    /* The number of keyboard devices that were attached to the system since the last poll. This value defines the number of valid entries in the KeyboardAttachList array. */
+    uint32_t                      KeyboardRemoveCount;    /* The number of keyboard devices that were removed from the system since the last poll. This value defines the number of valid entries in the KeyboardRemoveList array. */
+    uint32_t                      KeyboardDeviceCount;    /* The number of keyboard devices that are currently attached to the system. This value defines the number of valid entires in the KeyboardDeviceIds and KeyboardDeviceEvents arrays. */
+    HANDLE                       *KeyboardDeviceIds;      /* An array of KeyboardDeviceCount entries specifying unique device identifiers for each keyboard device attached to the system. */
+    CORE_INPUT_KEYBOARD_EVENTS   *KeyboardDeviceEvents;   /* An array of KeyboardDeviceCount entries specifying the input events that have occurred since the last poll for each keyboard device. */
+    HANDLE                       *KeyboardAttachList;     /* An array of KeyboardAttachCount entries specifying the device identifier for each keyboard device attached to the system since the last poll. */
+    HANDLE                       *KeyboardRemoveList;     /* An array of KeyboardRemoveCount entries specifying the device identifier for each keyboard device removed from the system since the last poll. */
+} CORE_INPUT_EVENTS;
+typedef struct _CORE_INPUT_SYSTEM_INIT {
+    uint32_t                      MaxPointerDevices;      /* The maximum number of supported pointer devices attached to the system at any one time. */
+    uint32_t                      MaxGamepadDevices;      /* The maximum number of supported gamepad devices attached to the system at any one time. */
+    uint32_t                      MaxKeyboardDevices;     /* The maximum number of supported keyboard devices attached to the system at any one time. */
+    uint32_t                      MaxEventsPerGamepad;    /* The maximum number of button events that should be reported per gamepad device. */
+    uint32_t                      MaxEventsPerPointer;    /* The maximum number of button events that should be reported per pointer device. */
+    uint32_t                      MaxEventsPerKeyboard;   /* The maximum number of key events that should be reported per keyboard device. */
+    uint32_t                      MaxInputEventsInFlight; /* The maximum number of _CORE_INPUT_EVENTS structures expected to be in use at any one time. */
+} CORE_INPUT_SYSTEM_INIT;
 
 #endif /* CORE_INPUT_IMPLEMENTATION */
 
