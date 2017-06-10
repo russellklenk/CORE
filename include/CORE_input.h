@@ -270,8 +270,8 @@ CORE_PushRawInputPacket
 
 /* @summary Update the input device state based on a RawInput device change notification sent to the associated window.
  * @param input_system The _CORE_INPUT_SYSTEM to update.
- * @param wparam The WPARAM sent to the window with the device change message.
- * @param lparam The LPARAM sent to the window with the device change message.
+ * @param wparam The WPARAM sent to the window with the WM_INPUT_DEVICE_CHANGE message, specifying whether a device was attached or removed.
+ * @param lparam The LPARAM sent to the window with the WM_INPUT_DEVICE_CHANGE message, specifying the device HANDLE.
  */
 CORE_API(void)
 CORE_PushRawInputDeviceChange
@@ -563,6 +563,8 @@ typedef struct _CORE__INPUT_XINPUT_DISPATCH {
 /* @summary Define the data associated with an input system. An input system manages the user input associated with a single window.
  */
 typedef struct _CORE_INPUT_SYSTEM {
+    uint64_t                         ClockFrequency;              /* The frequency, in ticks-per-second, of the system high-resolution timer. */
+    uint64_t                         LastConsumeTime;             /* The timestamp, in ticks, at which the most recent event buffer was consumed. */
     HANDLE                           QueueSemaphore;              /* A semaphore object used to sleep a thread attempting to acquire an input event snapshot. */
     CORE_INPUT_EVENTS              **InputEventsQueue;            /* A fixed-size array of pointers to CORE_INPUT_EVENTS from which threads acquire an input event snapshot. */
     uint32_t                         InputEventsCount;            /* The number of CORE_INPUT_EVENTS structures allocated within the system and representing the maximum number of in-flight snapshots. */
@@ -1298,6 +1300,55 @@ CORE__GenerateGamepadInputEvents
     events->ButtonReleasedCount = num_r;
 }
 
+/* @summary Build a device set and generate events related to device attachment and removal.
+ * @param events The CORE_INPUT_EVENTS to update.
+ * @param device_list_prev The gamepad device list from the previous update.
+ * @param device_list_curr The gamepad device list from the current update.
+ */
+static void
+CORE__GenerateGamepadDeviceEvents
+(
+    CORE_INPUT_EVENTS                 *events, 
+    CORE__INPUT_DEVICE_LIST *device_list_prev, 
+    CORE__INPUT_DEVICE_LIST *device_list_curr
+)
+{
+    uint32_t                             i, n;
+    CORE__INPUT_DEVICE_SET         device_set;
+    CORE__DetermineInputDeviceSet(&device_set, device_list_prev, device_list_curr);
+    events->GamepadAttachCount = 0;
+    events->GamepadRemoveCount = 0;
+    events->GamepadDeviceCount = 0;
+    for (i = 0, n = device_set.DeviceCount; i < n; ++i)
+    {
+        switch (device_set.Membership[i])
+        {
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_NONE:
+            { /* skip */
+            } break;
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_PREV:
+            { /* the input device was just removed */
+              events->GamepadRemoveList[events->GamepadRemoveCount] = device_set.DeviceIds[i];
+              events->GamepadRemoveCount++;
+            } break;
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_CURR:
+            { /* the input device was just attached */
+              events->GamepadAttachList[events->GamepadAttachCount] = device_set.DeviceIds[i];
+              events->GamepadAttachCount++;
+            } break;
+        default:
+            { /* the input device was present in both snapshots */
+              CORE_INPUT_GAMEPAD_EVENTS *input_ev = &events->GamepadDeviceEvents[events->GamepadDeviceCount];
+              CORE__INPUT_GAMEPAD_STATE *state_pp = CORE__GamepadDeviceListState(device_list_prev, device_set.PrevIndex[i]);
+              CORE__INPUT_GAMEPAD_STATE *state_cp = CORE__GamepadDeviceListState(device_list_curr, device_set.CurrIndex[i]);
+              events->GamepadDeviceIds[events->GamepadDeviceCount] = device_set.DeviceIds[i];
+              CORE__GenerateGamepadDeviceEvents(input_ev, state_pp, state_cp);
+              events->GamepadDeviceCount++;
+            } break;
+        }
+    }
+}
+
 /* @summary Given two pointer state snapshots, generate events for keys down, pressed and released.
  * @param events The keyboard events structure to populate.
  * @param prev The state snapshot for the device from the previous update.
@@ -1360,6 +1411,83 @@ CORE__GeneratePointerInputEvents
     events->ButtonReleasedCount = num_r;
 }
 
+/* @summary Build a device set and generate events related to device attachment and removal.
+ * @param events The CORE_INPUT_EVENTS to update.
+ * @param device_list_prev The pointer device list from the previous update.
+ * @param device_list_curr The pointer device list from the current update.
+ */
+static void
+CORE__GeneratePointerDeviceEvents
+(
+    CORE_INPUT_EVENTS                 *events, 
+    CORE__INPUT_DEVICE_LIST *device_list_prev, 
+    CORE__INPUT_DEVICE_LIST *device_list_curr
+)
+{
+    uint32_t                             i, n;
+    CORE__INPUT_DEVICE_SET         device_set;
+    CORE__DetermineInputDeviceSet(&device_set, device_list_prev, device_list_curr);
+    events->PointerAttachCount = 0;
+    events->PointerRemoveCount = 0;
+    events->PointerDeviceCount = 0;
+    for (i = 0, n = device_set.DeviceCount; i < n; ++i)
+    {
+        switch (device_set.Membership[i])
+        {
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_NONE:
+            { /* skip */
+            } break;
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_PREV:
+            { /* the input device was just removed */
+              events->PointerRemoveList[events->PointerRemoveCount] = device_set.DeviceIds[i];
+              events->PointerRemoveCount++;
+            } break;
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_CURR:
+            { /* the input device was just attached */
+              events->PointerAttachList[events->PointerAttachCount] = device_set.DeviceIds[i];
+              events->PointerAttachCount++;
+            } break;
+        default:
+            { /* the input device was present in both snapshots */
+              CORE_INPUT_POINTER_EVENTS *input_ev = &events->PointerDeviceEvents[events->PointerDeviceCount];
+              CORE__INPUT_POINTER_STATE *state_pp = CORE__PointerDeviceListState(device_list_prev, device_set.PrevIndex[i]);
+              CORE__INPUT_POINTER_STATE *state_cp = CORE__PointerDeviceListState(device_list_curr, device_set.CurrIndex[i]);
+              events->PointerDeviceIds[events->PointerDeviceCount] = device_set.DeviceIds[i];
+              CORE__GeneratePointerDeviceEvents(input_ev, state_pp, state_cp);
+              events->PointerDeviceCount++;
+            } break;
+        }
+    }
+}
+
+/* @summary Copy pointer device information from the prior write buffer to the current write buffer.
+ * @param dst The CORE__INPUT_DEVICE_LIST representing the new write buffer.
+ * @param src The CORE__INPUT_DEVICE_LIST representing the previous write buffer.
+ */
+static void
+CORE__ForwardPointerDeviceList
+(
+    CORE__INPUT_DEVICE_LIST *dst, 
+    CORE__INPUT_DEVICE_LIST *src
+)
+{
+    uint32_t i, n;
+
+    if (dst != NULL && dst != src)
+    {
+        dst->DeviceCount = src->DeviceCount;
+        CopyMemory(dst->DeviceHandle, src->DeviceHandle, src->DeviceCount * sizeof(HANDLE));
+        CopyMemory(dst->DeviceState , src->DeviceState , src->DeviceCount * sizeof(CORE__INPUT_POINTER_STATE));
+        for (i = 0, n = src->DeviceCount; i < n; ++i)
+        {
+            CORE__INPUT_POINTER_STATE *dstate = CORE__PointerDeviceListState(dst, i);
+            dstate->Flags = CORE__INPUT_POINTER_FLAGS_NONE;
+            dstate->Relative[0] = 0;
+            dstate->Relative[1] = 0;
+        }
+    }
+}
+
 /* @summary Given two keyboard state snapshots, generate events for keys down, pressed and released.
  * @param events The keyboard events structure to populate.
  * @param prev The state snapshot for the device from the previous update.
@@ -1419,19 +1547,70 @@ CORE__GenerateKeyboardInputEvents
 
 /* @summary Build a device set and generate events related to device attachment and removal.
  * @param events The CORE_INPUT_EVENTS to update.
- * @param device_set A CORE__INPUT_DEVICE_SET to populate with information about ...
- * @param device_list_prev 
- * @param device_list_curr
+ * @param device_list_prev The keyboard device list from the previous update.
+ * @param device_list_curr The keyboard device list from the current update.
  */
 static void
 CORE__GenerateKeyboardDeviceEvents
 (
     CORE_INPUT_EVENTS                 *events, 
-    CORE__INPUT_DEVICE_SET        *device_set, 
     CORE__INPUT_DEVICE_LIST *device_list_prev, 
     CORE__INPUT_DEVICE_LIST *device_list_curr
 )
 {
+    uint32_t                             i, n;
+    CORE__INPUT_DEVICE_SET         device_set;
+    CORE__DetermineInputDeviceSet(&device_set, device_list_prev, device_list_curr);
+    events->KeyboardAttachCount  = 0;
+    events->KeyboardRemoveCount  = 0;
+    events->KeyboardDeviceCount  = 0;
+    for (i = 0, n = device_set.DeviceCount; i < n; ++i)
+    {
+        switch (device_set.Membership[i])
+        {
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_NONE:
+            { /* skip */
+            } break;
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_PREV:
+            { /* the input device was just removed */
+              events->KeyboardRemoveList[events->KeyboardRemoveCount] = device_set.DeviceIds[i];
+              events->KeyboardRemoveCount++;
+            } break;
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_CURR:
+            { /* the input device was just attached */
+              events->KeyboardAttachList[events->KeyboardAttachCount] = device_set.DeviceIds[i];
+              events->KeyboardAttachCount++;
+            } break;
+        default:
+            { /* the input device was present in both snapshots */
+              CORE_INPUT_KEYBOARD_EVENTS *input_ev = &events->KeyboardDeviceEvents[events->KeyboardDeviceCount];
+              CORE__INPUT_KEYBOARD_STATE *state_pp = CORE__KeyboardDeviceListState(device_list_prev, device_set.PrevIndex[i]);
+              CORE__INPUT_KEYBOARD_STATE *state_cp = CORE__KeyboardDeviceListState(device_list_curr, device_set.CurrIndex[i]);
+              events->KeyboardDeviceIds[events->KeyboardDeviceCount] = device_set.DeviceIds[i];
+              CORE__GenerateKeyboardDeviceEvents(input_ev, state_pp, state_cp);
+              events->KeyboardDeviceCount++;
+            } break;
+        }
+    }
+}
+
+/* @summary Copy keyboard device information from the prior write buffer to the current write buffer.
+ * @param dst The CORE__INPUT_DEVICE_LIST representing the new write buffer.
+ * @param src The CORE__INPUT_DEVICE_LIST representing the previous write buffer.
+ */
+static void
+CORE__ForwardKeyboardDeviceList
+(
+    CORE__INPUT_DEVICE_LIST *dst, 
+    CORE__INPUT_DEVICE_LIST *src
+)
+{
+    if (dst != NULL && dst != src)
+    {
+        dst->DeviceCount = src->DeviceCount;
+        CopyMemory(dst->DeviceHandle, src->DeviceHandle, src->DeviceCount * sizeof(HANDLE));
+        CopyMemory(dst->DeviceState , src->DeviceState , src->DeviceCount * sizeof(CORE__INPUT_KEYBOARD_STATE));
+    }
 }
 
 CORE_API(int)
@@ -1561,40 +1740,76 @@ CORE_QueryInputSystemMemorySize
 )
 {
     size_t required_size = 0;
-    size_t   events_size = 0;
-    uint32_t        i, n;
+    uint32_t  i, j, n, m;
     /* calculate the amount of memory required for the data stored directly in _CORE_INPUT_SYSTEM.
      * this includes the size of the structure itself, since all data is private.
      */
     required_size += CORE__InputAllocationSizeType (CORE__INPUT_SYSTEM);
     required_size += CORE__InputAllocationSizeArray(CORE_INPUT_EVENTS*, init->MaxInputEventsInFlight); /* InputEventsQueue */
     required_size += CORE__InputAllocationSizeArray(CORE_INPUT_EVENTS*, init->MaxInputEventsInFlight); /* InputEvents      */
+    /* calculate the amount of memory required for the _CORE__INPUT_DEVICE_LIST objects */
+    for (i = 0; i < 2; ++i)
+    {
+        if (init->MaxGamepadDevices > 0)
+        {
+            required_size += CORE__InputAllocationSizeArray(HANDLE                   , init->MaxGamepadDevices);
+            required_size += CORE__InputAllocationSizeArray(CORE__INPUT_GAMEPAD_STATE, init->MaxGamepadDevices);
+        }
+        if (init->MaxPointerDevices > 0)
+        {
+            required_size += CORE__InputAllocationSizeArray(HANDLE                   , init->MaxPointerDevices);
+            required_size += CORE__InputAllocationSizeArray(CORE__INPUT_POINTER_STATE, init->MaxPointerDevices);
+        }
+        if (init->MaxKeyboardDevices > 0)
+        {
+            required_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxKeyboardDevices);
+            required_size += CORE__InputAllocationSizeArray(CORE__INPUT_KEYBOARD_STATE, init->MaxKeyboardDevices);
+        }
+    }
     /* calculate the amount of memory required for each _CORE_INPUT_EVENTS in the pool */
-    events_size   += CORE__InputAllocationSizeType (CORE_INPUT_EVENTS);
-    // TODO: Device lists
-    if (init->MaxGamepadDevices > 0)
-    {   events_size += CORE__InputAllocationSizeArray(DWORD                     , init->MaxGamepadDevices);  /* GamepadDeviceIds     */
-        events_size += CORE__InputAllocationSizeArray(CORE_INPUT_GAMEPAD_EVENTS , init->MaxGamepadDevices);  /* GamepadDeviceEvents  */
-        events_size += CORE__InputAllocationSizeArray(DWORD                     , init->MaxGamepadDevices);  /* GamepadAttachList    */
-        events_size += CORE__InputAllocationSizeArray(DWORD                     , init->MaxGamepadDevices);  /* GamepadRemoveList    */
-        events_size += CORE__InputAllocationSizeArray(uint16_t, init->MaxEventsPerGamepad * 3) * init->MaxGamepadDevices; /* ButtonsDown/Pressed/Released */
+    for (i = 0, n = init->MaxInputEventsInFlight; i < n; ++i)
+    {
+        required_size += CORE__InputAllocationSizeType(CORE_INPUT_EVENTS);
+        if (init->MaxGamepadDevices > 0)
+        {
+            required_size += CORE__InputAllocationSizeArray(DWORD                    , init->MaxGamepadDevices);
+            required_size += CORE__InputAllocationSizeArray(DWORD                    , init->MaxGamepadDevices);
+            required_size += CORE__InputAllocationSizeArray(DWORD                    , init->MaxGamepadDevices);
+            required_size += CORE__InputAllocationSizeArray(CORE_INPUT_GAMEPAD_EVENTS, init->MaxGamepadDevices);
+            for (j = 0, m = init->MaxGamepadDevices; j < m; ++j)
+            {
+                required_size += CORE__InputAllocationSizeArray(uint16_t, init->MaxEventsPerGamepad);
+                required_size += CORE__InputAllocationSizeArray(uint16_t, init->MaxEventsPerGamepad);
+                required_size += CORE__InputAllocationSizeArray(uint16_t, init->MaxEventsPerGamepad);
+            }
+        }
+        if (init->MaxPointerDevices > 0)
+        {
+            required_size += CORE__InputAllocationSizeArray(HANDLE                   , init->MaxPointerDevices);
+            required_size += CORE__InputAllocationSizeArray(HANDLE                   , init->MaxPointerDevices);
+            required_size += CORE__InputAllocationSizeArray(HANDLE                   , init->MaxPointerDevices);
+            required_size += CORE__InputAllocationSizeArray(CORE_INPUT_POINTER_EVENTS, init->MaxPointerDevices);
+            for (j = 0, m = init->MaxPointerDevices; j < m; ++j)
+            {
+                required_size += CORE__InputAllocationSizeArray(uint16_t, init->MaxEventsPerPointer);
+                required_size += CORE__InputAllocationSizeArray(uint16_t, init->MaxEventsPerPointer);
+                required_size += CORE__InputAllocationSizeArray(uint16_t, init->MaxEventsPerPointer);
+            }
+        }
+        if (init->MaxKeyboardDevices > 0)
+        {
+            required_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxKeyboardDevices);
+            required_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxKeyboardDevices);
+            required_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxKeyboardDevices);
+            required_size += CORE__InputAllocationSizeArray(CORE_INPUT_KEYBOARD_EVENTS, init->MaxKeyboardDevices);
+            for (j = 0, m = init->MaxPointerDevices; j < m; ++j)
+            {
+                required_size += CORE__InputAllocationSizeArray(uint8_t, init->MaxEventsPerKeyboard);
+                required_size += CORE__InputAllocationSizeArray(uint8_t, init->MaxEventsPerKeyboard);
+                required_size += CORE__InputAllocationSizeArray(uint8_t, init->MaxEventsPerKeyboard);
+            }
+        }
     }
-    if (init->MaxPointerDevices > 0)
-    {   events_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxPointerDevices);  /* PointerDeviceIds     */
-        events_size += CORE__InputAllocationSizeArray(CORE_INPUT_POINTER_EVENTS , init->MaxPointerDevices);  /* PointerDeviceEvents  */
-        events_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxPointerDevices);  /* PointerAttachList    */
-        events_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxPointerDevices);  /* PointerRemoveList    */
-        events_size += CORE__InputAllocationSizeArray(uint16_t, init->MaxEventsPerPointer * 3) * init->MaxPointerDevices; /* ButtonsDown/Pressed/Released */
-    }
-    if (init->MaxKeyboardDevices > 0)
-    {   events_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxKeyboardDevices); /* KeyboardDeviceIds    */
-        events_size += CORE__InputAllocationSizeArray(CORE_INPUT_KEYBOARD_EVENTS, init->MaxKeyboardDevices); /* KeyboardDeviceEvents */
-        events_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxKeyboardDevices); /* KeyboardAttachList   */
-        events_size += CORE__InputAllocationSizeArray(HANDLE                    , init->MaxKeyboardDevices); /* KeyboardRemoveList   */
-        events_size += CORE__InputAllocationSizeArray(uint8_t, init->MaxEventsPerKeyboard * 3) * init->MaxKeyboardDevices; /* KeysDown/Pressed/Released */
-    }
-    /* calculate the total memory required for all data */
-    required_size +=(events_size * init->MaxInputEventsInFlight);
     return required_size;
 }
 
@@ -1611,6 +1826,7 @@ CORE_CreateInputSystem
     size_t       required_size = 0;
     int   missing_entry_points = 0;
     uint32_t        i, j, n, m;
+    LARGE_INTEGER    frequency;
 
     if (init->SourceWindow == NULL)
     {   /* the source window must be specified */
@@ -1687,7 +1903,11 @@ CORE_CreateInputSystem
     {   /* the user has enabled gamepad devices, so load XInput */
         CORE__LoadXInput(&system->XInput, &missing_entry_points);
     }
+    /* retrieve the high-resolution clock frequency */
+    QueryPerformanceFrequency(&frequency);
     /* allocate the arrays within the input system */
+    system->ClockFrequency   =(uint64_t) frequency.QuadPart;
+    system->LastConsumeTime  = 0;
     system->InputEventsQueue = CORE__InputMemoryArenaAllocateArray(CORE_INPUT_EVENTS*, init->MaxInputEventsInFlight);
     system->InputEvents      = CORE__InputMemoryArenaAllocateArray(CORE_INPUT_EVENTS*, init->MaxInputEventsInFlight);
     system->InputEventsCount = init->MaxInputEventsInFlight;
@@ -1816,6 +2036,8 @@ CORE_CreateInputSystem
             events->KeyboardRemoveList   = NULL;
             events->KeyboardDeviceEvents = NULL;
         }
+        system->InputEvents[i]      = events;
+        system->InputEventsQueue[i] = events;
     }
    *input_system = system;
     return 0;
@@ -1831,106 +2053,264 @@ cleanup_and_fail:
    *input_system = NULL;
     return -1;
 }
-#if 0
-There are three players here. There is one system per-window.
-1. Thread managing the window and pushing data into the system.
-   Only one thread can fill role #1.
-   This thread must synchronize with #2.
-   This thread writes to the current 'write buffer'.
-2. Thread attempting to grab an event snapshot.
-   Only one thread can fill role #2, though it may poll one system per-window.
-   This thread must synchronize with one thread filling role #1.
-   - It swaps the buffers, and takes ownership of the previous 'write buffer'.
-   This thread must synchronize with one or more threads filling role #3.
-   - It attempts to take an event buffer from the head of the FIFO.
-   - The calling thread must block until an event buffer is available.
-3. Thread attempting to return an event buffer that is no longer needed.
-   More than one thread can fill role #3.
-   This thread must synchronize with zero or more threads filling role #3.
-   - It only updates the tail of the queue and returns very quickly.
 
-Basically, the system maintains a semaphore initialized with the maximum number of in-flight frames.
-There's also a CRITICAL_SECTION used to synchronize concurrent #3. 
-Given indices H and T, the initial state is:
-- Sem(Capacity)
-- CS_WRITEBUF
-- CS_RETURN
-- H = 0
-- T = Capacity - 1
-- dbuf
+CORE_API(void)
+CORE_DeleteInputSystem
+(
+    struct _CORE_INPUT_SYSTEM *input_system
+)
+{
+    if (input_system != NULL)
+    {
+        if (input_system->XInput.XInputModule != NULL)
+        {
+            FreeLibrary(input_system->XInput.XInputModule);
+            input_system->XInput.XInputModule = NULL;
+        }
+        if (input_system->QueueSemaphore != NULL)
+        {
+            DeleteCriticalSection(&input_system->ReturnLock);
+            DeleteCriticalSection(&input_system->WriterLock);
+            CloseHandle(input_system->QueueSemaphore);
+            input_system->QueueSemaphore = NULL;
+        }
+    }
+}
 
-A thread #1 does:
-Enter(CS_WRITEBUF)
-ProcessData(packet, device_list[dbuf])
-Leave(CS_WRITEBUF)
+CORE_API(void)
+CORE_PushRawInputPacket
+(
+    struct _CORE_INPUT_SYSTEM *input_system, 
+    RAWINPUT                  *input_packet
+)
+{
+    EnterCriticalSection(&input_system->WriterLock);
+    {
+        uint32_t write_buffer = input_system->WriteIndex;
+        if (input_packet->header.dwType == RIM_TYPEMOUSE)
+        {   /* mouse/pointer devices are supported via RawInput */
+            CORE__ProcessMouseInputPacket(&input_system->PointerDeviceList[write_buffer], input_packet);
+        }
+        else if (input_packet->header.dwType == RIM_TYPEKEYBOARD)
+        {   /* keyboard devices are supported via RawInput */
+            CORE__ProcessKeyboardInputPacket(&input_system->KeyboardDeviceList[write_buffer], input_packet);
+        }
+    }
+    LeaveCriticalSection(&input_system->WriterLock);
+}
 
-A thread #2 does:
-Wait(Sem); /* when this unblocks, an item is available */
-slot = head % Capacity;
-item = stor[slot];
-head++
-Enter(CS_WRITEBUF)
-sbuf = dbuf      /* sbuf is the buffer we will read from - the previous write buffer */
-dbuf = 1 - dbuf; /* dbuf is the buffer thread #1 will write to */
-Leave(CS_WRITEBUF)
-
-A thread #3 does:
-Enter(CS_RETURN)
-slot = tail % Capacity;
-stor[slot] = item
-tail++
-Leave(CS_RETURN)
-Make(Sem) /* make an item available for a thread #2 */
-
-Really, there is only ever one events object in flight at any one time in a naive implementation.
-The frame launch collects an events object from each window. These are used until the frame completes.
-The next frame launch cannot begin until the in-flight frame completes.
-This holds as long as a frame can be completed in a single tick.
-If the tick rate is very high, say 240Hz, this may not hold. It might also not be a good idea, because 
-you're "spawn a bunch of work, and wait until it drains completely". This fails to keep the system busy, 
-for example, you fire off a frame, but the images are not all ready in time, so you have some workers 
-busy and others idle. You can either wait and be unresponsive, missing input and falling behind, or 
-potentially launch the next frame and use the idle workers to get a head start.
+CORE_API(void)
+CORE_PushRawInputDeviceChange
+(
+    struct _CORE_INPUT_SYSTEM *input_system, 
+    WPARAM                           wparam, 
+    LPARAM                           lparam
+)
+{
+#ifndef RIDI_DEVICEINFO
+#define RIDI_DEVICEINFO 0x2000000b
 #endif
-typedef struct _CORE_INPUT_EVENTS {
-    struct _CORE_INPUT_SYSTEM    *InputSystem;            /* The _CORE_INPUT_SYSTEM that owns the input event buffer. */
-    struct _CORE_INPUT_EVENTS    *NextEvents;             /* A pointer to the next item in the queue. User code always sees this value as NULL. */
-    uint64_t                      StartTime;              /* The timestamp, in nanoseconds, at which the input event interval began. */
-    uint64_t                      CaptureTime;            /* The timestamp, in nanoseconds, at which the input events were retrieved by the application. */
-    uint32_t                      MaxGamepadDevices;      /* The maximum number of gamepad devices that can be attached to the system. This value defines the dimensions of the GamepadAttachList/GamepadRemoveList/GamepadDeviceIds/GamepadDeviceEvents arrays. */
-    uint32_t                      GamepadAttachCount;     /* The number of gamepad devices that were attached to the system since the last poll. This value defines the number of valid entries in the GamepadAttachList array. */
-    uint32_t                      GamepadRemoveCount;     /* The number of gamepad devices that were detached from the system since the last poll. This value defines the number of valid entries in the GamepadRemoveList array. */
-    uint32_t                      GamepadDeviceCount;     /* The number of gamepad devices that are currently attached to the system. This value defines the number of valid entries in the GamepadDeviceIds and GamepadDeviceEvents arrays. */
-    DWORD                        *GamepadDeviceIds;       /* An array of GamepadDeviceCount entries specifying the port numbers to which active gamepads are attached. */
-    CORE_INPUT_GAMEPAD_EVENTS    *GamepadDeviceEvents;    /* An array of GamepadDeviceCount entries specifying the input events that have occurred for each attached gamepad device. */
-    DWORD                        *GamepadAttachList;      /* An array of GamepadAttachCount entries specifying the port IDs to which gamepad devices were attached since the last poll. */
-    DWORD                        *GamepadRemoveList;      /* An array of GamepadRemoveCount entries specifying the port IDs from which gamepad devices were removed since the last poll.*/
-    uint32_t                      MaxPointerDevices;      /* The maximum number of pointer devices that can be attached to the system. This value defines the dimensions of the PointerAttachList/PointerRemoveList/PointerDeviceIds/PointerDeviceEvents arrays. */
-    uint32_t                      PointerAttachCount;     /* The number of pointer devices that were attached to the system since the last poll. This value defines the number of valid entries in the PointerAttachList array. */
-    uint32_t                      PointerRemoveCount;     /* The number of pointer devices that were detached from the system since the last poll. This value defines the number of valid entries in the PointerRemoveList array. */
-    uint32_t                      PointerDeviceCount;     /* The number of pointer devices that are currently attached to the system. This value defines the number of valid entries in the PointerDeviceIds and PointerDeviceEvents arrays. */
-    HANDLE                       *PointerDeviceIds;       /* An array of PointerDeviceCount handles specifying unique identifiers for each pointer device attached to the system. */
-    CORE_INPUT_POINTER_EVENTS    *PointerDeviceEvents;    /* An array of PointerDeviceCount entries specifying the input events that have occurred since the last poll for each pointer device. */
-    HANDLE                       *PointerAttachList;      /* An array of PointerAttachCount entries specifying the device identifiers for each pointer device attached to the system since the last poll. */
-    HANDLE                       *PointerRemoveList;      /* An array of PointerRemoveCount entries specifying the device identifiers for each pointer device detached from the system since the last poll. */
-    uint32_t                      MaxKeyboardDevices;     /* The maximum number of keyboard devices that can be attached to the system. This value defines the dimensions of the KeyboardAttachList/KeyboardRemoveList/KeyboardDeviceIds/KeyboardDeviceEvents arrays. */
-    uint32_t                      KeyboardAttachCount;    /* The number of keyboard devices that were attached to the system since the last poll. This value defines the number of valid entries in the KeyboardAttachList array. */
-    uint32_t                      KeyboardRemoveCount;    /* The number of keyboard devices that were removed from the system since the last poll. This value defines the number of valid entries in the KeyboardRemoveList array. */
-    uint32_t                      KeyboardDeviceCount;    /* The number of keyboard devices that are currently attached to the system. This value defines the number of valid entires in the KeyboardDeviceIds and KeyboardDeviceEvents arrays. */
-    HANDLE                       *KeyboardDeviceIds;      /* An array of KeyboardDeviceCount entries specifying unique device identifiers for each keyboard device attached to the system. */
-    CORE_INPUT_KEYBOARD_EVENTS   *KeyboardDeviceEvents;   /* An array of KeyboardDeviceCount entries specifying the input events that have occurred since the last poll for each keyboard device. */
-    HANDLE                       *KeyboardAttachList;     /* An array of KeyboardAttachCount entries specifying the device identifier for each keyboard device attached to the system since the last poll. */
-    HANDLE                       *KeyboardRemoveList;     /* An array of KeyboardRemoveCount entries specifying the device identifier for each keyboard device removed from the system since the last poll. */
-} CORE_INPUT_EVENTS;
-typedef struct _CORE_INPUT_SYSTEM_INIT {
-    uint32_t                      MaxPointerDevices;      /* The maximum number of supported pointer devices attached to the system at any one time. */
-    uint32_t                      MaxGamepadDevices;      /* The maximum number of supported gamepad devices attached to the system at any one time. */
-    uint32_t                      MaxKeyboardDevices;     /* The maximum number of supported keyboard devices attached to the system at any one time. */
-    uint32_t                      MaxEventsPerGamepad;    /* The maximum number of button events that should be reported per gamepad device. */
-    uint32_t                      MaxEventsPerPointer;    /* The maximum number of button events that should be reported per pointer device. */
-    uint32_t                      MaxEventsPerKeyboard;   /* The maximum number of key events that should be reported per keyboard device. */
-    uint32_t                      MaxInputEventsInFlight; /* The maximum number of _CORE_INPUT_EVENTS structures expected to be in use at any one time. */
-} CORE_INPUT_SYSTEM_INIT;
+    CORE__INPUT_DEVICE_LIST **buffer_list = NULL;
+    CORE__INPUT_DEVICE_LIST  *device_list = NULL;
+    size_t              device_state_size = 0;
+    HANDLE                  device_handle =(HANDLE)lparam;
+    UINT                 device_info_size = sizeof(RID_DEVICE_INFO);
+    UINT                 result_info_size = 0;
+    BOOL                   process_update = TRUE;
+    RID_DEVICE_INFO           device_info;
+
+    /* retireve information about the device that was attached or removed */
+    ZeroMemory(&device_info, sizeof(RID_DEVICE_INFO));
+    device_info.cbSize     = sizeof(RID_DEVICE_INFO);
+    result_info_size       = GetRawInputDeviceInfo(device_handle, RIDI_DEVICE_INFO, &device_info, &device_info_size);
+    if (result_info_size  <= device_info_size)
+    {
+        if (device_info.dwType == RIM_TYPEMOUSE         && (wparam == GDIC_ATTACH || wparam == GDIC_REMOVAL))
+        {   /* mouse and pointer devices are handled */
+            buffer_list       = input_system->PointerDeviceList;
+            device_state_size = sizeof(CORE__INPUT_POINTER_STATE);
+            process_update    = TRUE;
+        }
+        else if (device_info.dwType == RIM_TYPEKEYBOARD && (wparam == GDIC_ATTACH || wparam == GDIC_REMOVAL))
+        {   /* keyboard devices are handled */
+            buffer_list       = input_system->KeyboardDeviceList;
+            device_state_size = sizeof(CORE__INPUT_KEYBOARD_STATE);
+            process_update    = TRUE;
+        }
+        else
+        {   /* the device type or the message type are not handled */
+            process_update = FALSE;
+        }
+    }
+    else if (wparam == GIDC_REMOVAL)
+    {   /* GetRawInputDeviceInfo returns UINT -1 (0xFFFFFFFF) on failure, usually if the device was removed */
+        process_update = TRUE;
+    }
+    else
+    {   /* GetRawInputDeviceInfo failed, but this isn't a device removal message */
+        process_update = FALSE;
+    }
+    
+    if (process_update)
+    {
+        EnterCriticalSection(&input_system->WriterLock);
+        {
+            uint32_t write_buffer = input_system->WriteIndex;
+            if (result_info_size <= device_info_size)
+            {
+                if (wparam == GIDC_ARRIVAL)
+                {   /* the input device was just attached to the system */
+                    CORE__HandleInputDeviceAttach(&buffer_list[write_buffer], device_handle, device_state_size);
+                }
+                else
+                {   /* the input device was just removed from the system */
+                    CORE__HandleInputDeviceRemove(&buffer_list[write_buffer], device_handle, device_state_size);
+                }
+            }
+            else
+            {   /* typically when a device is removed, GetRawInputDeviceInfo fails - guess at the device type */
+                if (!CORE__HandleInputDeviceRemove(&input_system->PointerDeviceList[write_buffer], device_handle, sizeof(CORE__INPUT_POINTER_STATE)))
+                {   /* not a pointer - try keyboard devices next */
+                    CORE__HandleInputDeviceRemove(&input_system->KeyboardDeviceList[write_buffer], device_handle, sizeof(CORE__INPUT_KEYBOARD_STATE));
+                }
+            }
+        }
+        LeaveCriticalSection(&input_system->WriterLock);
+    }
+}
+
+CORE_API(void)
+CORE_SimulateKeyPress
+(
+    struct _CORE_INPUT_SYSTEM *input_system, 
+    HANDLE                           device, 
+    UINT                             vkcode
+)
+{
+    CORE__INPUT_KEYBOARD_STATE *state = NULL;
+    uint32_t                      bit = 1UL << (vkcode & 0x1F);
+    uint32_t              state_index = vkcode >> 5;
+    uint32_t                     i, n;
+    EnterCriticalSection(&input_system->WriterLock);
+    {
+        CORE__INPUT_DEVICE_LIST *list = &input_system->KeyboardDeviceList[input_system->WriteIndex];
+        if (device != INVALID_HANDLE_VALUE)
+        {   /* locate the target device */
+            for (i = 0, n = list->DeviceCount; i < n; ++i)
+            {
+                if (list->DeviceHandle[i] == device)
+                {   /* set the bit corresponding to the virtual key code */
+                    state = CORE__KeyboardDeviceListState(list, i);
+                    state->KeyState[state_index] |= bit;
+                    break;
+                }
+            }
+        }
+        else
+        {   /* broadcast the key press to all attached keyboards */
+            for (i = 0, n = list->DeviceCount; i < n; ++i)
+            {   /* set the bit corresponding to the virtual key code */
+                state = CORE__KeyboardDeviceListState(list, i);
+                state->KeyState[state_index] |= bit;
+            }
+        }
+    }
+    LeaveCriticalSection(&input_system->WriterLock);
+}
+
+CORE_API(void)
+CORE_SimulateKeyRelease
+(
+    struct _CORE_INPUT_SYSTEM *input_system, 
+    HANDLE                           device, 
+    UINT                             vkcode
+)
+{
+    CORE__INPUT_KEYBOARD_STATE *state = NULL;
+    uint32_t                      bit = 1UL << (vkcode & 0x1F);
+    uint32_t              state_index = vkcode >> 5;
+    uint32_t                     i, n;
+    EnterCriticalSection(&input_system->WriterLock);
+    {
+        CORE__INPUT_DEVICE_LIST *list = &input_system->KeyboardDeviceList[input_system->WriteIndex];
+        if (device != INVALID_HANDLE_VALUE)
+        {   /* locate the target device */
+            for (i = 0, n = list->DeviceCount; i < n; ++i)
+            {
+                if (list->DeviceHandle[i] == device)
+                {   /* clear the bit corresponding to the virtual key code */
+                    state = CORE__KeyboardDeviceListState(list, i);
+                    state->KeyState[state_index] &= ~bit;
+                    break;
+                }
+            }
+        }
+        else
+        {   /* broadcast the key release to all attached keyboards */
+            for (i = 0, n = list->DeviceCount; i < n; ++i)
+            {   /* set the bit corresponding to the virtual key code */
+                state = CORE__KeyboardDeviceListState(list, i);
+                state->KeyState[state_index] &= ~bit;
+            }
+        }
+    }
+    LeaveCriticalSection(&input_system->WriterLock);
+}
+
+CORE_API(struct _CORE_INPUT_EVENTS*)
+CORE_ConsumeInputEvents
+(
+    struct _CORE_INPUT_SYSTEM *input_system
+)
+{
+    CORE_INPUT_EVENTS *events = NULL;
+    uint32_t             slot = 0;
+    uint32_t             sbuf = 0;
+    DWORD            wait_res = WAIT_OBJECT_0;
+    LARGE_INTEGER   timestamp;
+    
+    /* wait for a resource to become available */
+    if ((wait_res = WaitForSingleObject(input_system->QueueSemaphore, INFINITE)) == WAIT_OBJECT_0)
+    {   /* there's at least one _CORE_INPUT_EVENTS available in the queue */
+        slot   = input_system->QueueHead % input_system->InputEventsCount;
+        events = input_system->InputEventsQueue[slot];
+        input_system->QueueHead++;
+        /* swap the current write buffer */
+        EnterCriticalSection(&input_system->WriterLock);
+        {
+            sbuf = input_system->WriteIndex;
+            input_system->WriteIndex = 1 - input_system->WriteIndex;
+        }
+        LeaveCriticalSection(&input_system->WriterLock);
+        /* TODO: populate the input events structure */
+        return events;
+    }
+    else
+    {   /* the wait failed */
+        return NULL;
+    }
+}
+
+CORE_API(void)
+CORE_ReturnInputEvents
+(
+    struct _CORE_INPUT_EVENTS *event_buffer
+)
+{
+    uint32_t slot = 0;
+    if (event_buffer != NULL)
+    {   /* synchronize with concurrent writers */
+        EnterCriticalSection(&input_system->WriterLock);
+        {
+            slot = input_system->QueueTail % input_system->InputEventsCount;
+            input_system->InputEventsQueue[slot] = event_buffer;
+            input_system->QueueTail++;
+        }
+        LeaveCriticalSection(&input_system->WriterLock);
+        /* potentially unblock a thread waiting in ConsumeInputEvents */
+        ReleaseSemaphore(input_system->QueueSemaphore, 1, 0);
+    }
+}
 
 #endif /* CORE_INPUT_IMPLEMENTATION */
 
