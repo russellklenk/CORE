@@ -539,6 +539,11 @@ typedef struct _CORE__INPUT_DEVICE_SET {
 /* @summary Define the function pointer types for the entry points loaded from the XInput module on the host system.
  * See XInput.h (distributed with the Windows SDK) for details.
  */
+struct _XINPUT_STATE;
+struct _XINPUT_VIBRATION;
+struct _XINPUT_KEYSTROKE;
+struct _XINPUT_CAPABILITIES;
+struct _XINPUT_BATTERY_INFORMATION;
 typedef void  (WINAPI *XInputEnable_Func               )(BOOL);
 typedef DWORD (WINAPI *XInputGetState_Func             )(DWORD, struct _XINPUT_STATE*);
 typedef DWORD (WINAPI *XInputSetState_Func             )(DWORD, struct _XINPUT_VIBRATION*);
@@ -565,6 +570,7 @@ typedef struct _CORE__INPUT_XINPUT_DISPATCH {
 typedef struct _CORE_INPUT_SYSTEM {
     uint64_t                         ClockFrequency;              /* The frequency, in ticks-per-second, of the system high-resolution timer. */
     uint64_t                         LastConsumeTime;             /* The timestamp, in ticks, at which the most recent event buffer was consumed. */
+    uint64_t                         LastGamepadPoll;             /* The timestamp, in ticks, at which the full set of gamepad ports were polled. */
     HANDLE                           QueueSemaphore;              /* A semaphore object used to sleep a thread attempting to acquire an input event snapshot. */
     CORE_INPUT_EVENTS              **InputEventsQueue;            /* A fixed-size array of pointers to CORE_INPUT_EVENTS from which threads acquire an input event snapshot. */
     uint32_t                         InputEventsCount;            /* The number of CORE_INPUT_EVENTS structures allocated within the system and representing the maximum number of in-flight snapshots. */
@@ -641,6 +647,65 @@ CORE__InputMemoryArenaAllocateHost
     {   /* the arena cannot satisfy the allocation */
         return NULL;
     }
+}
+
+/* @summary Retrieve a high-resolution timestamp value from the system.
+ * @return A timestamp value specified in device-dependent units.
+ */
+static uint64_t
+CORE__InputTimestampInTicks
+(
+    void
+)
+{
+    LARGE_INTEGER timestamp;
+    QueryPerformanceCounter(&timestamp);
+    return (uint64_t) timestamp.QuadPart;
+}
+
+/* @summary Convert a number of milliseconds into the corresponding number of nanoseconds.
+ * @param milliseconds The time quantity, in milliseconds.
+ * @return The corresponding time quantity in nanoseconds.
+ */
+static uint64_t
+CORE__InputMillisecondsToNanoseconds
+(
+    uint32_t milliseconds
+)
+{
+    return ((uint64_t) milliseconds) * 1000000ULL;
+}
+
+/* @summary Convert a timestamp value from device-dependent units to nanoseconds.
+ * @param timestamp The timestamp value to convert.
+ * @param frequency The frequency of the timer, in ticks-per-second.
+ * @return The timestamp value, in nanoseconds.
+ */
+static uint64_t
+CORE__InputTimestampToNanoseconds
+(
+    uint64_t timestamp, 
+    uint64_t frequency
+)
+{
+    return (1000000000ULL * timestamp) / frequency;
+}
+
+/* @summary Calculate the number of elapsed nanoseconds between two timestamp values.
+ * @param start_ticks The timestamp value representing the start of the measured interval.
+ * @param end_ticks The timestamp value representing the end of the measured interval.
+ * @param frequency The frequency of the timer, in ticks-per-second.
+ * @return The number of nanoseconds elapsed between the start and end timestamps.
+ */
+static uint64_t
+CORE__InputElapsedNanoseconds
+(
+    uint64_t start_ticks, 
+    uint64_t   end_ticks, 
+    uint64_t   frequency
+)
+{
+    return (1000000000ULL * (end_ticks - start_ticks)) / frequency;
 }
 
 /* @summary Define a stub no-op implementation of the XInputEnable API.
@@ -1065,7 +1130,7 @@ CORE__ProcessGamepadInputPacket
         index = device_list->DeviceCount;
         state = CORE__GamepadDeviceListState(device_list, index);
         ZeroMemory(state, sizeof(CORE__INPUT_GAMEPAD_STATE));
-        device_list->DeviceHandle[i] = device;
+        device_list->DeviceHandle[index] = device;
         device_list->DeviceCount++;
     }
 
@@ -1110,7 +1175,7 @@ CORE__ProcessMouseInputPacket
         index = device_list->DeviceCount;
         state = CORE__PointerDeviceListState(device_list, index);
         ZeroMemory(state, sizeof(CORE__INPUT_POINTER_STATE));
-        device_list->DeviceHandle[i] = header->hDevice;
+        device_list->DeviceHandle[index] = header->hDevice;
         device_list->DeviceCount++;
     }
 
@@ -1188,7 +1253,7 @@ CORE__ProcessKeyboardInputPacket
         index = device_list->DeviceCount;
         state = CORE__KeyboardDeviceListState(device_list, index);
         ZeroMemory(state, sizeof(CORE__INPUT_KEYBOARD_STATE));
-        device_list->DeviceHandle[i] = header->hDevice;
+        device_list->DeviceHandle[index] = header->hDevice;
         device_list->DeviceCount++;
     }
     if (!CORE_InputGetVirtualKeyAndScanCode(&vkey_code, &scan_code, key))
@@ -1292,7 +1357,7 @@ CORE__GenerateGamepadInputEvents
         }
         if (num_r < max_events && (ups & mask) != 0)
         {   /* this button was just released */
-            events->ButtonssReleased[num_r++] = (uint16_t) button;
+            events->ButtonsReleased[num_r++] = (uint16_t) button;
         }
     }
     events->ButtonDownCount     = num_d;
@@ -1328,12 +1393,12 @@ CORE__GenerateGamepadDeviceEvents
             } break;
         case CORE__INPUT_DEVICE_SET_MEMBERSHIP_PREV:
             { /* the input device was just removed */
-              events->GamepadRemoveList[events->GamepadRemoveCount] = device_set.DeviceIds[i];
+              events->GamepadRemoveList[events->GamepadRemoveCount] = (DWORD)((DWORD_PTR) device_set.DeviceIds[i]);
               events->GamepadRemoveCount++;
             } break;
         case CORE__INPUT_DEVICE_SET_MEMBERSHIP_CURR:
             { /* the input device was just attached */
-              events->GamepadAttachList[events->GamepadAttachCount] = device_set.DeviceIds[i];
+              events->GamepadAttachList[events->GamepadAttachCount] = (DWORD)((DWORD_PTR) device_set.DeviceIds[i]);
               events->GamepadAttachCount++;
             } break;
         default:
@@ -1341,8 +1406,8 @@ CORE__GenerateGamepadDeviceEvents
               CORE_INPUT_GAMEPAD_EVENTS *input_ev = &events->GamepadDeviceEvents[events->GamepadDeviceCount];
               CORE__INPUT_GAMEPAD_STATE *state_pp = CORE__GamepadDeviceListState(device_list_prev, device_set.PrevIndex[i]);
               CORE__INPUT_GAMEPAD_STATE *state_cp = CORE__GamepadDeviceListState(device_list_curr, device_set.CurrIndex[i]);
-              events->GamepadDeviceIds[events->GamepadDeviceCount] = device_set.DeviceIds[i];
-              CORE__GenerateGamepadDeviceEvents(input_ev, state_pp, state_cp);
+              events->GamepadDeviceIds[events->GamepadDeviceCount] = (DWORD)((DWORD_PTR) device_set.DeviceIds[i]);
+              CORE__GenerateGamepadInputEvents(input_ev, state_pp, state_cp);
               events->GamepadDeviceCount++;
             } break;
         }
@@ -1403,7 +1468,7 @@ CORE__GeneratePointerInputEvents
         }
         if (num_r < max_events && (ups & mask) != 0)
         {   /* this button was just released */
-            events->ButtonssReleased[num_r++] = (uint16_t) button;
+            events->ButtonsReleased[num_r++] = (uint16_t) button;
         }
     }
     events->ButtonDownCount     = num_d;
@@ -1453,7 +1518,7 @@ CORE__GeneratePointerDeviceEvents
               CORE__INPUT_POINTER_STATE *state_pp = CORE__PointerDeviceListState(device_list_prev, device_set.PrevIndex[i]);
               CORE__INPUT_POINTER_STATE *state_cp = CORE__PointerDeviceListState(device_list_curr, device_set.CurrIndex[i]);
               events->PointerDeviceIds[events->PointerDeviceCount] = device_set.DeviceIds[i];
-              CORE__GeneratePointerDeviceEvents(input_ev, state_pp, state_cp);
+              CORE__GeneratePointerInputEvents(input_ev, state_pp, state_cp);
               events->PointerDeviceCount++;
             } break;
         }
@@ -1587,7 +1652,7 @@ CORE__GenerateKeyboardDeviceEvents
               CORE__INPUT_KEYBOARD_STATE *state_pp = CORE__KeyboardDeviceListState(device_list_prev, device_set.PrevIndex[i]);
               CORE__INPUT_KEYBOARD_STATE *state_cp = CORE__KeyboardDeviceListState(device_list_curr, device_set.CurrIndex[i]);
               events->KeyboardDeviceIds[events->KeyboardDeviceCount] = device_set.DeviceIds[i];
-              CORE__GenerateKeyboardDeviceEvents(input_ev, state_pp, state_cp);
+              CORE__GenerateKeyboardInputEvents(input_ev, state_pp, state_cp);
               events->KeyboardDeviceCount++;
             } break;
         }
@@ -1621,9 +1686,9 @@ CORE_InputGetVirtualKeyAndScanCode
     RAWKEYBOARD const *key 
 )
 {
-    uint32_t vkey = key.VKey;
-    uint32_t scan = key.MakeCode;
-    uint32_t   e0 = key.Flags & RI_KEY_E0;
+    uint32_t vkey = key->VKey;
+    uint32_t scan = key->MakeCode;
+    uint32_t   e0 = key->Flags & RI_KEY_E0;
 
     if (vkey == 255)
     {   /* discard fake keys; these are just part of an escaped sequence */
@@ -1639,7 +1704,7 @@ CORE_InputGetVirtualKeyAndScanCode
     {   /* correct PAUSE/BREAK and NUMLOCK. set the extended bit */
         scan  = MapVirtualKey(vkey, MAPVK_VK_TO_VSC) | 0x100;
     }
-    if (key.Flags & RI_KEY_E1)
+    if (key->Flags & RI_KEY_E1)
     {   /* for escaped sequences, turn the virtual key into the correct scan code.
          * unfortunately, MapVirtualKey can't handle VK_PAUSE, so do that manually. */
         if (vkey != VK_PAUSE) scan = MapVirtualKey(vkey, MAPVK_VK_TO_VSC);
@@ -1908,8 +1973,9 @@ CORE_CreateInputSystem
     /* allocate the arrays within the input system */
     system->ClockFrequency   =(uint64_t) frequency.QuadPart;
     system->LastConsumeTime  = 0;
-    system->InputEventsQueue = CORE__InputMemoryArenaAllocateArray(CORE_INPUT_EVENTS*, init->MaxInputEventsInFlight);
-    system->InputEvents      = CORE__InputMemoryArenaAllocateArray(CORE_INPUT_EVENTS*, init->MaxInputEventsInFlight);
+    system->LastGamepadPoll  = 0;
+    system->InputEventsQueue = CORE__InputMemoryArenaAllocateArray(&arena, CORE_INPUT_EVENTS*, init->MaxInputEventsInFlight);
+    system->InputEvents      = CORE__InputMemoryArenaAllocateArray(&arena, CORE_INPUT_EVENTS*, init->MaxInputEventsInFlight);
     system->InputEventsCount = init->MaxInputEventsInFlight;
     system->QueueHead        = 0;
     system->WriteIndex       = 0;
@@ -1930,8 +1996,8 @@ CORE_CreateInputSystem
         system->KeyboardDeviceList[i].DeviceCount = 0;
         if (init->MaxGamepadDevices > 0)
         {   /* allocate the arrays for the device list */
-            system->GamepadDeviceList[i].DeviceHandle = CORE__InputMemoryArenaAllocateArray(HANDLE                   , init->MaxGamepadDevices);
-            system->GamepadDeviceList[i].DeviceState  = CORE__InputMemoryArenaAllocateArray(CORE__INPUT_GAMEPAD_STATE, init->MaxGamepadDevices);
+            system->GamepadDeviceList[i].DeviceHandle = CORE__InputMemoryArenaAllocateArray(&arena, HANDLE                   , init->MaxGamepadDevices);
+            system->GamepadDeviceList[i].DeviceState  = CORE__InputMemoryArenaAllocateArray(&arena, CORE__INPUT_GAMEPAD_STATE, init->MaxGamepadDevices);
         }
         else
         {   /* the user has not enabled gamepad device support */
@@ -1940,8 +2006,8 @@ CORE_CreateInputSystem
         }
         if (init->MaxPointerDevices > 0)
         {   /* allocate the arrays for the device list */
-            system->PointerDeviceList[i].DeviceHandle = CORE__InputMemoryArenaAllocateArray(HANDLE                   , init->MaxPointerDevices);
-            system->PointerDeviceList[i].DeviceState  = CORE__InputMemoryArenaAllocateArray(CORE__INPUT_POINTER_STATE, init->MaxPointerDevices);
+            system->PointerDeviceList[i].DeviceHandle = CORE__InputMemoryArenaAllocateArray(&arena, HANDLE                   , init->MaxPointerDevices);
+            system->PointerDeviceList[i].DeviceState  = CORE__InputMemoryArenaAllocateArray(&arena, CORE__INPUT_POINTER_STATE, init->MaxPointerDevices);
         }
         else
         {   /* the user has not enabled pointer device support */
@@ -1950,8 +2016,8 @@ CORE_CreateInputSystem
         }
         if (init->MaxKeyboardDevices > 0)
         {   /* allocate the arrays for the device list */
-            system->KeyboardDeviceList[i].DeviceHandle = CORE__InputMemoryArenaAllocateArray(HANDLE                    , init->MaxKeyboardDevices);
-            system->KeyboardDeviceList[i].DeviceState  = CORE__InputMemoryArenaAllocateArray(CORE__INPUT_KEYBOARD_STATE, init->MaxKeyboardDevices);
+            system->KeyboardDeviceList[i].DeviceHandle = CORE__InputMemoryArenaAllocateArray(&arena, HANDLE                    , init->MaxKeyboardDevices);
+            system->KeyboardDeviceList[i].DeviceState  = CORE__InputMemoryArenaAllocateArray(&arena, CORE__INPUT_KEYBOARD_STATE, init->MaxKeyboardDevices);
         }
         else
         {   /* the user has not enabled keyboard device support */
@@ -1962,7 +2028,7 @@ CORE_CreateInputSystem
     /* allocate the event buffers */
     for (i = 0, n = init->MaxInputEventsInFlight; i < n; ++i)
     {   /* initialize the individual CORE_INPUT_EVENTS object */
-        events= CORE__InputMemoryArenaAllocateType(CORE_INPUT_EVENTS);
+        events= CORE__InputMemoryArenaAllocateType(&arena, CORE_INPUT_EVENTS);
         events->InputSystem         = system;
         events->NextEvents          = NULL;
         events->StartTime           = 0;
@@ -1972,17 +2038,17 @@ CORE_CreateInputSystem
         events->MaxKeyboardDevices  = init->MaxKeyboardDevices;
         if (init->MaxGamepadDevices > 0)
         {   /* allocate the arrays for the gamepad devices */
-            events->GamepadDeviceIds    = CORE__InputMemoryArenaAllocateArray(DWORD                    , init->MaxGamepadDevices);
-            events->GamepadAttachList   = CORE__InputMemoryArenaAllocateArray(DWORD                    , init->MaxGamepadDevices);
-            events->GamepadRemoveList   = CORE__InputMemoryArenaAllocateArray(DWORD                    , init->MaxGamepadDevices);
-            events->GamepadDeviceEvents = CORE__InputMemoryArenaAllocateArray(CORE_INPUT_GAMEPAD_EVENTS, init->MaxGamepadDevices);
+            events->GamepadDeviceIds    = CORE__InputMemoryArenaAllocateArray(&arena, DWORD                    , init->MaxGamepadDevices);
+            events->GamepadAttachList   = CORE__InputMemoryArenaAllocateArray(&arena, DWORD                    , init->MaxGamepadDevices);
+            events->GamepadRemoveList   = CORE__InputMemoryArenaAllocateArray(&arena, DWORD                    , init->MaxGamepadDevices);
+            events->GamepadDeviceEvents = CORE__InputMemoryArenaAllocateArray(&arena, CORE_INPUT_GAMEPAD_EVENTS, init->MaxGamepadDevices);
             for (j = 0, m = init->MaxGamepadDevices; j < m; ++j)
             {
                 CORE_INPUT_GAMEPAD_EVENTS *device_ev = &events->GamepadDeviceEvents[j];
                 device_ev->MaxButtonEvents = init->MaxEventsPerGamepad;
-                device_ev->ButtonsDown     = CORE__InputMemoryArenaAllocateArray(uint16_t, init->MaxEventsPerGamepad);
-                device_ev->ButtonsPressed  = CORE__InputMemoryArenaAllocateArray(uint16_t, init->MaxEventsPerGamepad);
-                device_ev->ButtonsReleased = CORE__InputMemoryArenaAllocateArray(uint16_t, init->MaxEventsPerGamepad);
+                device_ev->ButtonsDown     = CORE__InputMemoryArenaAllocateArray(&arena, uint16_t, init->MaxEventsPerGamepad);
+                device_ev->ButtonsPressed  = CORE__InputMemoryArenaAllocateArray(&arena, uint16_t, init->MaxEventsPerGamepad);
+                device_ev->ButtonsReleased = CORE__InputMemoryArenaAllocateArray(&arena, uint16_t, init->MaxEventsPerGamepad);
             }
         }
         else
@@ -1994,17 +2060,17 @@ CORE_CreateInputSystem
         }
         if (init->MaxPointerDevices > 0)
         {   /* allocate the arrays for the pointer devices */
-            events->PointerDeviceIds    = CORE__InputMemoryArenaAllocateArray(HANDLE                   , init->MaxPointerDevices);
-            events->PointerAttachList   = CORE__InputMemoryArenaAllocateArray(HANDLE                   , init->MaxPointerDevices);
-            events->PointerRemoveList   = CORE__InputMemoryArenaAllocateArray(HANDLE                   , init->MaxPointerDevices);
-            events->PointerDeviceEvents = CORE__InputMemoryArenaAllocateArray(CORE_INPUT_POINTER_EVENTS, init->MaxPointerDevices);
+            events->PointerDeviceIds    = CORE__InputMemoryArenaAllocateArray(&arena, HANDLE                   , init->MaxPointerDevices);
+            events->PointerAttachList   = CORE__InputMemoryArenaAllocateArray(&arena, HANDLE                   , init->MaxPointerDevices);
+            events->PointerRemoveList   = CORE__InputMemoryArenaAllocateArray(&arena, HANDLE                   , init->MaxPointerDevices);
+            events->PointerDeviceEvents = CORE__InputMemoryArenaAllocateArray(&arena, CORE_INPUT_POINTER_EVENTS, init->MaxPointerDevices);
             for (j = 0, m = init->MaxPointerDevices; j < m; ++j)
             {
                 CORE_INPUT_POINTER_EVENTS *device_ev = &events->PointerDeviceEvents[j];
                 device_ev->MaxButtonEvents = init->MaxEventsPerPointer;
-                device_ev->ButtonsDown     = CORE__InputMemoryArenaAllocateArray(uint16_t, init->MaxEventsPerPointer);
-                device_ev->ButtonsPressed  = CORE__InputMemoryArenaAllocateArray(uint16_t, init->MaxEventsPerPointer);
-                device_ev->ButtonsReleased = CORE__InputMemoryArenaAllocateArray(uint16_t, init->MaxEventsPerPointer);
+                device_ev->ButtonsDown     = CORE__InputMemoryArenaAllocateArray(&arena, uint16_t, init->MaxEventsPerPointer);
+                device_ev->ButtonsPressed  = CORE__InputMemoryArenaAllocateArray(&arena, uint16_t, init->MaxEventsPerPointer);
+                device_ev->ButtonsReleased = CORE__InputMemoryArenaAllocateArray(&arena, uint16_t, init->MaxEventsPerPointer);
             }
         }
         else
@@ -2016,17 +2082,17 @@ CORE_CreateInputSystem
         }
         if (init->MaxKeyboardDevices > 0)
         {   /* allocate the arrays for the keyboard devices */
-            events->KeyboardDeviceIds    = CORE__InputMemoryArenaAllocateArray(HANDLE                    , init->MaxKeyboardDevices);
-            events->KeyboardAttachList   = CORE__InputMemoryArenaAllocateArray(HANDLE                    , init->MaxKeyboardDevices);
-            events->KeyboardRemoveList   = CORE__InputMemoryArenaAllocateArray(HANDLE                    , init->MaxKeyboardDevices);
-            events->KeyboardDeviceEvents = CORE__InputMemoryArenaAllocateArray(CORE_INPUT_KEYBOARD_EVENTS, init->MaxKeyboardDevices);
+            events->KeyboardDeviceIds    = CORE__InputMemoryArenaAllocateArray(&arena, HANDLE                    , init->MaxKeyboardDevices);
+            events->KeyboardAttachList   = CORE__InputMemoryArenaAllocateArray(&arena, HANDLE                    , init->MaxKeyboardDevices);
+            events->KeyboardRemoveList   = CORE__InputMemoryArenaAllocateArray(&arena, HANDLE                    , init->MaxKeyboardDevices);
+            events->KeyboardDeviceEvents = CORE__InputMemoryArenaAllocateArray(&arena, CORE_INPUT_KEYBOARD_EVENTS, init->MaxKeyboardDevices);
             for (j = 0, m = init->MaxKeyboardDevices; j < m; ++j)
             {
                 CORE_INPUT_KEYBOARD_EVENTS *device_ev = &events->KeyboardDeviceEvents[j];
                 device_ev->MaxKeyEvents  = init->MaxEventsPerKeyboard;
-                device_ev->KeysDown      = CORE__InputMemoryArenaAllocateArray(uint8_t, init->MaxEventsPerKeyboard);
-                device_ev->KeysPressed   = CORE__InputMemoryArenaAllocateArray(uint8_t, init->MaxEventsPerKeyboard);
-                device_ev->KeysReleased  = CORE__InputMemoryArenaAllocateArray(uint8_t, init->MaxEventsPerKeyboard);
+                device_ev->KeysDown      = CORE__InputMemoryArenaAllocateArray(&arena, uint8_t, init->MaxEventsPerKeyboard);
+                device_ev->KeysPressed   = CORE__InputMemoryArenaAllocateArray(&arena, uint8_t, init->MaxEventsPerKeyboard);
+                device_ev->KeysReleased  = CORE__InputMemoryArenaAllocateArray(&arena, uint8_t, init->MaxEventsPerKeyboard);
             }
         }
         else
@@ -2110,30 +2176,34 @@ CORE_PushRawInputDeviceChange
 #ifndef RIDI_DEVICEINFO
 #define RIDI_DEVICEINFO 0x2000000b
 #endif
-    CORE__INPUT_DEVICE_LIST **buffer_list = NULL;
-    CORE__INPUT_DEVICE_LIST  *device_list = NULL;
-    size_t              device_state_size = 0;
-    HANDLE                  device_handle =(HANDLE)lparam;
-    UINT                 device_info_size = sizeof(RID_DEVICE_INFO);
-    UINT                 result_info_size = 0;
-    BOOL                   process_update = TRUE;
-    RID_DEVICE_INFO           device_info;
+    CORE__INPUT_DEVICE_LIST    *buffer_list = NULL;
+    void                      *device_state = NULL;
+    size_t                device_state_size = 0;
+    HANDLE                    device_handle =(HANDLE)lparam;
+    UINT                   device_info_size = sizeof(RID_DEVICE_INFO);
+    UINT                   result_info_size = 0;
+    BOOL                     process_update = TRUE;
+    CORE__INPUT_POINTER_STATE  default_pdev = CORE__INPUT_POINTER_STATE_STATIC_INIT;
+    CORE__INPUT_KEYBOARD_STATE default_kdev = CORE__INPUT_KEYBOARD_STATE_STATIC_INIT;
+    RID_DEVICE_INFO             device_info;
 
     /* retireve information about the device that was attached or removed */
     ZeroMemory(&device_info, sizeof(RID_DEVICE_INFO));
     device_info.cbSize     = sizeof(RID_DEVICE_INFO);
-    result_info_size       = GetRawInputDeviceInfo(device_handle, RIDI_DEVICE_INFO, &device_info, &device_info_size);
+    result_info_size       = GetRawInputDeviceInfo(device_handle, RIDI_DEVICEINFO, &device_info, &device_info_size);
     if (result_info_size  <= device_info_size)
     {
-        if (device_info.dwType == RIM_TYPEMOUSE         && (wparam == GDIC_ATTACH || wparam == GDIC_REMOVAL))
+        if (device_info.dwType == RIM_TYPEMOUSE         && (wparam == GIDC_ARRIVAL || wparam == GIDC_REMOVAL))
         {   /* mouse and pointer devices are handled */
             buffer_list       = input_system->PointerDeviceList;
+            device_state      = &default_pdev;
             device_state_size = sizeof(CORE__INPUT_POINTER_STATE);
             process_update    = TRUE;
         }
-        else if (device_info.dwType == RIM_TYPEKEYBOARD && (wparam == GDIC_ATTACH || wparam == GDIC_REMOVAL))
+        else if (device_info.dwType == RIM_TYPEKEYBOARD && (wparam == GIDC_ARRIVAL || wparam == GIDC_REMOVAL))
         {   /* keyboard devices are handled */
             buffer_list       = input_system->KeyboardDeviceList;
+            device_state      = &default_kdev;
             device_state_size = sizeof(CORE__INPUT_KEYBOARD_STATE);
             process_update    = TRUE;
         }
@@ -2160,7 +2230,7 @@ CORE_PushRawInputDeviceChange
             {
                 if (wparam == GIDC_ARRIVAL)
                 {   /* the input device was just attached to the system */
-                    CORE__HandleInputDeviceAttach(&buffer_list[write_buffer], device_handle, device_state_size);
+                    CORE__HandleInputDeviceAttach(&buffer_list[write_buffer], device_handle, device_state, device_state_size);
                 }
                 else
                 {   /* the input device was just removed from the system */
@@ -2264,10 +2334,13 @@ CORE_ConsumeInputEvents
 )
 {
     CORE_INPUT_EVENTS *events = NULL;
+    uint64_t            ctime = 0;
+    uint64_t            stime = 0;
+    uint64_t            ptime = 0;
     uint32_t             slot = 0;
     uint32_t             sbuf = 0;
+    uint32_t             dbuf = 0;
     DWORD            wait_res = WAIT_OBJECT_0;
-    LARGE_INTEGER   timestamp;
     
     /* wait for a resource to become available */
     if ((wait_res = WaitForSingleObject(input_system->QueueSemaphore, INFINITE)) == WAIT_OBJECT_0)
@@ -2275,14 +2348,45 @@ CORE_ConsumeInputEvents
         slot   = input_system->QueueHead % input_system->InputEventsCount;
         events = input_system->InputEventsQueue[slot];
         input_system->QueueHead++;
-        /* swap the current write buffer */
+        /* retrieve the current timestamp */
+        stime = input_system->LastConsumeTime;
+        ptime = input_system->LastGamepadPoll;
+        ctime = CORE__InputTimestampInTicks();
+        /* determine the new source and destination buffer indices.
+         * the calling thread is the only thread that can update the WriteIndex.
+         * the calling thread is the only thread that can access buffer 1-WriteIndex until the swap.
+         * the calling thread is the only thread that can poll for/update gamepad device state at WriteIndex.
+         */
+        sbuf  =     input_system->WriteIndex; /* contains the most recent data */
+        dbuf  = 1 - input_system->WriteIndex; /* contains the oldest data */
+        if (CORE__InputElapsedNanoseconds(ptime, ctime, input_system->ClockFrequency) < CORE__InputMillisecondsToNanoseconds(1000))
+        {   /* poll the known set of gamepad ports, which is less expensive */
+            CORE__PollXInputGamepads(&input_system->GamepadDeviceList[sbuf], &input_system->GamepadPorts[sbuf], input_system->GamepadPorts[sbuf], &input_system->XInput);
+        }
+        else
+        {   /* poll the full set of gamepad ports to detect any newly attached devices */
+            CORE__PollXInputGamepads(&input_system->GamepadDeviceList[sbuf], &input_system->GamepadPorts[sbuf], CORE_INPUT_ALL_GAMEPAD_PORTS, &input_system->XInput);
+            input_system->LastGamepadPoll = ptime;
+        }
+        /* populate the basic event buffer fields */
+        events->InputSystem = input_system;
+        events->NextEvents  = NULL;
+        events->StartTime   = CORE__InputTimestampToNanoseconds(stime, input_system->ClockFrequency);
+        events->CaptureTime = CORE__InputTimestampToNanoseconds(ctime, input_system->ClockFrequency);
+        /* generate input events and swap the current write buffer */
         EnterCriticalSection(&input_system->WriterLock);
-        {
-            sbuf = input_system->WriteIndex;
-            input_system->WriteIndex = 1 - input_system->WriteIndex;
+        {   /* generate the actual input system events */
+            CORE__GenerateGamepadDeviceEvents (events, &input_system->GamepadDeviceList [dbuf], &input_system->GamepadDeviceList [sbuf]);
+            CORE__GeneratePointerDeviceEvents (events, &input_system->PointerDeviceList [dbuf], &input_system->PointerDeviceList [sbuf]);
+            CORE__GenerateKeyboardDeviceEvents(events, &input_system->KeyboardDeviceList[dbuf], &input_system->KeyboardDeviceList[sbuf]);
+            /* forward device state from the current tick to the next */
+            CORE__ForwardPointerDeviceList (&input_system->PointerDeviceList [dbuf], &input_system->PointerDeviceList [sbuf]);
+            CORE__ForwardKeyboardDeviceList(&input_system->KeyboardDeviceList[dbuf], &input_system->KeyboardDeviceList[sbuf]);
+            input_system->GamepadPorts[dbuf] = input_system->GamepadPorts[sbuf];
+            input_system->LastConsumeTime = ctime;
+            input_system->WriteIndex = dbuf;
         }
         LeaveCriticalSection(&input_system->WriterLock);
-        /* TODO: populate the input events structure */
         return events;
     }
     else
@@ -2298,8 +2402,10 @@ CORE_ReturnInputEvents
 )
 {
     uint32_t slot = 0;
-    if (event_buffer != NULL)
-    {   /* synchronize with concurrent writers */
+    if (event_buffer != NULL && event_buffer->InputSystem != NULL)
+    {   
+        CORE__INPUT_SYSTEM *input_system = event_buffer->InputSystem;
+        /* synchronize with concurrent writers */
         EnterCriticalSection(&input_system->WriterLock);
         {
             slot = input_system->QueueTail % input_system->InputEventsCount;
